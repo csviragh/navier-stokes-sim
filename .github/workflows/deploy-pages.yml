@@ -1,13 +1,10 @@
-# Deploys the built app to GitHub Pages.
-#
-# Not active until Pages is enabled for the repository:
-#   Settings → Pages → Build and deployment → Source: "GitHub Actions".
-# It only runs when triggered manually (Actions → Deploy to GitHub Pages →
-# Run workflow). Once Pages is enabled you can also add `push: branches: [main]`
-# under `on:` to deploy on every push.
+# Builds the app and deploys it to GitHub Pages on every push to main
+# (and on manual runs). Live at https://csviragh.github.io/navier-stokes-sim/
 name: Deploy to GitHub Pages
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:

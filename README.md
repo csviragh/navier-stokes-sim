@@ -5,6 +5,8 @@ with a real-time visualization frontend. Drag with the mouse (or a finger) to
 stir the fluid and inject coloured dye, and switch between views of the dye,
 velocity, pressure, vorticity, and divergence fields.
 
+**Try it live: <https://csviragh.github.io/navier-stokes-sim/>**
+
 ![Dye view after a few strokes](docs/screenshot.png)
 
 Built with **Vite + TypeScript** and no UI framework. The physics solver is a
@@ -130,7 +132,7 @@ tests/
 index.html           # page layout, control panel, equations panel
 .github/workflows/
   ci.yml             # tests + build on push / PR
-  deploy-pages.yml   # optional GitHub Pages deployment (manual trigger)
+  deploy-pages.yml   # GitHub Pages deployment (on push to main)
 ```
 
 The solver is plain TypeScript on `Float32Array`s. You can use it on its own:
@@ -161,11 +163,11 @@ sim.updateDiagnostics(); // fills uc, vc, divergence, vorticity
 - walls don't leak dye, viscosity dissipates energy, and the stir, reset, and
   resample helpers behave correctly.
 
-## Deploying to GitHub Pages (optional)
+## Deploying to GitHub Pages
 
 `.github/workflows/deploy-pages.yml` builds the app and publishes `dist/` to
-GitHub Pages. It only runs when you trigger it manually, and it will fail until
-Pages is enabled for the repo (**Settings → Pages → Source: GitHub Actions**).
+GitHub Pages on every push to `main` (it can also be run manually). The live
+site is <https://csviragh.github.io/navier-stokes-sim/>.
 Vite is configured with `base: './'`, so the build works under
 `https://<user>.github.io/navier-stokes-sim/` with no changes.
 
