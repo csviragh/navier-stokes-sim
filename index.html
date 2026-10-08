@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Interactive 2D incompressible Navier-Stokes fluid simulator (Stable Fluids) running in the browser." />
+    <title>Navier–Stokes Fluid Simulator</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%8A%3C/text%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <canvas id="sim" aria-label="Fluid simulation. Drag to stir the fluid."></canvas>
+    <canvas id="overlay" aria-hidden="true"></canvas>
+
+    <div id="hud">
+      <span id="fps">-- fps</span>
+      <span id="stats"></span>
+      <span id="legend"></span>
+    </div>
+
+    <button id="panel-toggle" class="icon-btn" title="Toggle controls (H)" aria-expanded="true" aria-controls="panel">☰</button>
+
+    <aside id="panel">
+      <header>
+        <h1>Navier–Stokes 2D</h1>
+        <p class="hint">Drag (mouse or touch) to push the fluid and inject dye.</p>
+      </header>
+
+      <section class="buttons">
+        <button id="play" title="Pause / play (Space)">⏸ Pause</button>
+        <button id="step" title="Advance one step (S)">⏭ Step</button>
+        <button id="reset" title="Reset (R)">⟲ Reset</button>
+      </section>
+
+      <section>
+        <label class="row">View
+          <select id="view">
+            <option value="dye">Dye</option>
+            <option value="speed">Velocity magnitude</option>
+            <option value="pressure">Pressure</option>
+            <option value="vorticity">Vorticity</option>
+            <option value="divergence">Divergence</option>
+          </select>
+        </label>
+        <label class="row check"><input type="checkbox" id="arrows" /> Velocity arrows overlay</label>
+      </section>
+
+      <section>
+        <h2>Physics</h2>
+        <label class="slider">Viscosity ν <output id="viscosity-out"></output>
+          <input type="range" id="viscosity" min="-7" max="-1" step="0.1" />
+        </label>
+        <label class="slider">Dye diffusion κ <output id="diffusion-out"></output>
+          <input type="range" id="diffusion" min="-8" max="-2" step="0.1" />
+        </label>
+        <label class="slider">Vorticity confinement ε <output id="vorticity-out"></output>
+          <input type="range" id="vorticity" min="0" max="12" step="0.1" />
+        </label>
+        <label class="slider">Dye fade (1/s) <output id="fade-out"></output>
+          <input type="range" id="fade" min="0" max="2" step="0.01" />
+        </label>
+        <label class="row">Walls
+          <select id="walls">
+            <option value="no-slip">No-slip</option>
+            <option value="free-slip">Free-slip</option>
+          </select>
+        </label>
+      </section>
+
+      <section>
+        <h2>Numerics</h2>
+        <label class="slider">Time step Δt (s) <output id="dt-out"></output>
+          <input type="range" id="dt" min="0.002" max="0.05" step="0.001" />
+        </label>
+        <label class="slider">Solver iterations <output id="iterations-out"></output>
+          <input type="range" id="iterations" min="1" max="100" step="1" />
+        </label>
+        <label class="slider">Grid resolution (short side) <output id="resolution-out"></output>
+          <input type="range" id="resolution" min="32" max="320" step="16" />
+        </label>
+      </section>
+
+      <section>
+        <h2>Interaction</h2>
+        <label class="row">Dye color
+          <span class="color-pick">
+            <input type="color" id="color" />
+            <label class="check"><input type="checkbox" id="rainbow" /> rainbow</label>
+          </span>
+        </label>
+        <label class="slider">Brush radius (cells) <output id="radius-out"></output>
+          <input type="range" id="radius" min="1" max="20" step="0.5" />
+        </label>
+        <label class="slider">Force strength <output id="force-out"></output>
+          <input type="range" id="force" min="0.1" max="5" step="0.1" />
+        </label>
+      </section>
+
+      <details id="about">
+        <summary>The equations</summary>
+        <p>The fluid is <b>incompressible</b> with constant density ρ = 1. Its velocity
+          <b>u</b>(x, t) and pressure p(x, t) obey the Navier–Stokes equations:</p>
+        <div class="eq">∂<b>u</b>/∂t + (<b>u</b>·∇)<b>u</b> = −∇p/ρ + ν∇²<b>u</b> + <b>f</b></div>
+        <div class="eq">∇·<b>u</b> = 0</div>
+        <p>The first is <b>momentum</b> conservation: acceleration along a fluid parcel
+          = pressure force + viscous diffusion (viscosity ν) + external force <b>f</b>
+          (your mouse). The second is the <b>incompressibility</b> (mass) constraint:
+          no fluid is created or destroyed anywhere, so the flow is divergence-free.</p>
+        <p>The coloured dye c is a passive scalar carried by the flow:</p>
+        <div class="eq">∂c/∂t + (<b>u</b>·∇)c = κ∇²c</div>
+        <p><b>Method</b> (Stam's "Stable Fluids"): each step adds forces, diffuses
+          velocity implicitly, advects it semi-Lagrangianly (trace back along the
+          flow, interpolate), and <i>projects</i> it onto divergence-free fields by
+          solving the Poisson equation ∇²p = ∇·<b>u</b>/Δt and subtracting Δt∇p.
+          Pressure therefore acts as the Lagrange multiplier that enforces ∇·<b>u</b> = 0.
+          Everything is unconditionally stable, so large Δt never explodes (it just
+          becomes more diffusive).</p>
+        <p>Shortcuts: <kbd>Space</kbd> pause, <kbd>S</kbd> step, <kbd>R</kbd> reset,
+          <kbd>V</kbd> next view, <kbd>A</kbd> arrows, <kbd>H</kbd> hide panel.</p>
+      </details>
+    </aside>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
