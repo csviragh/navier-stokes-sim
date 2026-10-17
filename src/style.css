@@ -89,6 +89,7 @@ button, select {
 }
 button:hover, select:hover { border-color: var(--accent); }
 
+button.wide { display: block; width: 100%; margin: 8px 0 4px; }
 .buttons { display: flex; gap: 6px; }
 .buttons button { flex: 1; }
 

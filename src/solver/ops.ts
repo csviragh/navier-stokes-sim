@@ -458,6 +458,74 @@ export function vorticityConfinement(
 }
 
 // ---------------------------------------------------------------------------
+// Self-propulsion (active fluid)
+// ---------------------------------------------------------------------------
+
+/** Below this local speed (domain units / s) the flow direction v/|v| is undefined and the term is skipped. */
+export const SELF_PROPULSION_EPS = 1e-6;
+
+/**
+ * Self-propulsion / active-fluid term (Toner–Tu / Vicsek-like):
+ *
+ *   ∂v/∂t = … − (1/τ) (|v| − v₀) v/|v|
+ *
+ * It relaxes the local speed |v| toward the target speed v₀ over the
+ * relaxation time τ while keeping the local flow direction. Taken on its own
+ * the speed obeys d|v|/dt = −(|v| − v₀)/τ, whose exact solution over one step
+ *
+ *   |v|ₙₑw = v₀ + (|v| − v₀) · exp(−Δt/τ)
+ *
+ * is applied along the unchanged direction v/|v|. This exact update is
+ * unconditionally stable for any Δt/τ (it never overshoots v₀) and always
+ * yields |v|ₙₑw ≥ 0 for v₀ ≥ 0.
+ *
+ * On the staggered grid |v| is evaluated at each face: on a u-face the v
+ * component is the average of the four surrounding v-faces, and vice versa
+ * (the same interpolation the advection step uses). Both components are read
+ * from the start-of-step copies (u0, v0), so the update is order independent.
+ * Where |v| < eps the direction is undefined and the face is left unchanged,
+ * so a fluid at rest stays at rest (seed it with a small perturbation).
+ *
+ * (u0, v0) receive a copy of the input field; (u, v) are updated in place.
+ */
+export function selfPropulsion(
+  g: Grid, u: Float32Array, v: Float32Array, u0: Float32Array, v0: Float32Array,
+  tau: number, targetSpeed: number, dt: number, walls: WallType, eps = SELF_PROPULSION_EPS,
+): void {
+  if (!(tau > 0) || !(dt > 0)) return;
+  const { nx, ny, uStride: us, vStride: vs } = g;
+  const decay = Math.exp(-dt / tau);
+  const vT = Math.max(0, targetSpeed);
+  const gain = vT * (1 - decay); // |v|new = gain + decay·|v|
+  u0.set(u);
+  v0.set(v);
+  for (let j = 1; j <= ny; j++) {
+    for (let i = 1; i < nx; i++) {
+      const k = i + us * j;
+      const vb = i + vs * (j - 1);
+      const uf = u0[k];
+      const vf = 0.25 * (v0[vb] + v0[vb + 1] + v0[vb + vs] + v0[vb + vs + 1]);
+      const sp = Math.sqrt(uf * uf + vf * vf);
+      if (sp < eps) continue;
+      u[k] = uf * (decay + gain / sp);
+    }
+  }
+  for (let j = 1; j < ny; j++) {
+    for (let i = 1; i <= nx; i++) {
+      const k = i + vs * j;
+      const ub = i - 1 + us * j;
+      const vf = v0[k];
+      const uf = 0.25 * (u0[ub] + u0[ub + 1] + u0[ub + us] + u0[ub + us + 1]);
+      const sp = Math.sqrt(uf * uf + vf * vf);
+      if (sp < eps) continue;
+      v[k] = vf * (decay + gain / sp);
+    }
+  }
+  setUBoundary(g, u, walls);
+  setVBoundary(g, v, walls);
+}
+
+// ---------------------------------------------------------------------------
 // Reductions
 // ---------------------------------------------------------------------------
 

@@ -32,6 +32,9 @@ function solverParams(s: Settings): Partial<FluidParams> {
     walls: s.walls,
     dt: s.dt,
     iterations: s.iterations,
+    selfPropulsion: s.selfPropulsion,
+    selfPropTau: s.selfPropTau,
+    selfPropV0: s.selfPropV0,
   };
 }
 
@@ -126,6 +129,16 @@ const controls = bindControls(settings, {
   onReset() {
     solver.reset();
     seedDemo(solver);
+    renderer.resetScales();
+  },
+  onActiveTurbulence() {
+    // Quick start: switch the active term on and start from weak random swirls,
+    // which it amplifies until the local speed approaches v₀.
+    settings.selfPropulsion = true;
+    settings.paused = false;
+    solver.setParams(solverParams(settings));
+    solver.reset();
+    solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05 * Math.max(settings.selfPropV0, 0.1) / 0.5);
     renderer.resetScales();
   },
 });

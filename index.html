@@ -67,6 +67,22 @@
       </section>
 
       <section>
+        <h2>Self-propulsion (active fluid)</h2>
+        <label class="check" title="Toggle (P)"><input type="checkbox" id="selfprop" />
+          Enable −(1/τ)(|u| − v₀)·u/|u|</label>
+        <label class="slider">Relaxation time τ (s) <output id="sp-tau-out"></output>
+          <input type="range" id="sp-tau" min="0.05" max="5" step="0.05" />
+        </label>
+        <label class="slider">Target speed v₀ <output id="sp-v0-out"></output>
+          <input type="range" id="sp-v0" min="0" max="2" step="0.05" />
+        </label>
+        <button id="active-turb" class="wide" title="Enable the term and seed weak random flow (T)">✨ Active turbulence quick start</button>
+        <p class="hint">Relaxes the local speed toward v₀ over time τ, keeping the flow direction.
+          Speeds are in domain units/s (short side = 1). A fluid at rest has no direction,
+          so stir it or use the quick start.</p>
+      </section>
+
+      <section>
         <h2>Numerics</h2>
         <label class="slider">Time step Δt (s) <output id="dt-out"></output>
           <input type="range" id="dt" min="0.002" max="0.05" step="0.001" />
@@ -105,17 +121,28 @@
           = pressure force + viscous diffusion (viscosity ν) + external force <b>f</b>
           (your mouse). The second is the <b>incompressibility</b> (mass) constraint:
           no fluid is created or destroyed anywhere, so the flow is divergence-free.</p>
+        <p><b>Self-propulsion</b> (optional, <i>active fluid</i>): with it switched on, the
+          momentum equation gains the term</p>
+        <div class="eq"><b>f</b><sub>active</sub> = −(1/τ) (|<b>u</b>| − v₀) <b>u</b>/|<b>u</b>|</div>
+        <p>which pushes the local speed |<b>u</b>| toward the target speed v₀ over the
+          relaxation time τ while keeping the local direction <b>u</b>/|<b>u</b>|: slow
+          fluid is accelerated, fast fluid is braked (as in Toner–Tu / Vicsek models of
+          swimming bacteria or flocks). It is applied exactly,
+          |<b>u</b>|<sub>new</sub> = v₀ + (|<b>u</b>| − v₀)·e<sup>−Δt/τ</sup>, so it is stable
+          for any Δt/τ. The projection afterwards keeps ∇·<b>u</b> = 0, so |<b>u</b>| ends up
+          close to, but not exactly, v₀ everywhere: the result is "active turbulence".</p>
         <p>The coloured dye c is a passive scalar carried by the flow:</p>
         <div class="eq">∂c/∂t + (<b>u</b>·∇)c = κ∇²c</div>
         <p><b>Method</b> (Stam's "Stable Fluids"): each step adds forces, diffuses
           velocity implicitly, advects it semi-Lagrangianly (trace back along the
-          flow, interpolate), and <i>projects</i> it onto divergence-free fields by
+          flow, interpolate), applies the optional self-propulsion term, and <i>projects</i> it onto divergence-free fields by
           solving the Poisson equation ∇²p = ∇·<b>u</b>/Δt and subtracting Δt∇p.
           Pressure therefore acts as the Lagrange multiplier that enforces ∇·<b>u</b> = 0.
           Everything is unconditionally stable, so large Δt never explodes (it just
           becomes more diffusive).</p>
         <p>Shortcuts: <kbd>Space</kbd> pause, <kbd>S</kbd> step, <kbd>R</kbd> reset,
-          <kbd>V</kbd> next view, <kbd>A</kbd> arrows, <kbd>H</kbd> hide panel.</p>
+          <kbd>V</kbd> next view, <kbd>A</kbd> arrows, <kbd>P</kbd> self-propulsion,
+          <kbd>T</kbd> active-turbulence quick start, <kbd>H</kbd> hide panel.</p>
       </details>
     </aside>
 

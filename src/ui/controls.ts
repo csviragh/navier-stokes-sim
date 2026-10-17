@@ -11,6 +11,8 @@ export interface ControlCallbacks {
   onChange(key: Key, settings: Settings): void;
   onStep(): void;
   onReset(): void;
+  /** Quick start: enable self-propulsion and seed weak random flow. */
+  onActiveTurbulence(): void;
 }
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -43,7 +45,8 @@ function logSlider(
 
 function linSlider(
   id: string,
-  key: 'vorticity' | 'dyeDissipation' | 'dt' | 'iterations' | 'resolution' | 'radius' | 'force',
+  key: 'vorticity' | 'dyeDissipation' | 'dt' | 'iterations' | 'resolution' | 'radius' | 'force'
+    | 'selfPropTau' | 'selfPropV0',
   s: Settings, cb: ControlCallbacks, format: (x: number) => string,
   event: 'input' | 'change' = 'input',
 ): () => void {
@@ -77,6 +80,18 @@ export function bindControls(s: Settings, cb: ControlCallbacks): { sync(): void 
   syncs.push(linSlider('resolution', 'resolution', s, cb, (x) => String(x), 'change'));
   syncs.push(linSlider('radius', 'radius', s, cb, (x) => x.toFixed(1)));
   syncs.push(linSlider('force', 'force', s, cb, (x) => x.toFixed(1)));
+  syncs.push(linSlider('sp-tau', 'selfPropTau', s, cb, (x) => x.toFixed(2)));
+  syncs.push(linSlider('sp-v0', 'selfPropV0', s, cb, (x) => x.toFixed(2)));
+
+  const selfProp = $<HTMLInputElement>('selfprop');
+  selfProp.addEventListener('change', () => {
+    s.selfPropulsion = selfProp.checked;
+    cb.onChange('selfPropulsion', s);
+  });
+  $<HTMLButtonElement>('active-turb').addEventListener('click', () => {
+    cb.onActiveTurbulence();
+    sync();
+  });
 
   const walls = $<HTMLSelectElement>('walls');
   walls.addEventListener('change', () => {
@@ -133,6 +148,7 @@ export function bindControls(s: Settings, cb: ControlCallbacks): { sync(): void 
     arrows.checked = s.arrows;
     color.value = s.color;
     rainbow.checked = s.rainbow;
+    selfProp.checked = s.selfPropulsion;
     play.textContent = s.paused ? '▶ Play' : '⏸ Pause';
   }
   sync();
@@ -166,6 +182,15 @@ export function bindControls(s: Settings, cb: ControlCallbacks): { sync(): void 
         break;
       case 'h':
         togglePanel();
+        break;
+      case 'p':
+        s.selfPropulsion = !s.selfPropulsion;
+        sync();
+        cb.onChange('selfPropulsion', s);
+        break;
+      case 't':
+        cb.onActiveTurbulence();
+        sync();
         break;
     }
   });

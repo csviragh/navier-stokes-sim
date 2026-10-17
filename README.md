@@ -3,7 +3,9 @@
 A browser-based simulator for the **2D incompressible Navier–Stokes equations**
 with a real-time visualization frontend. Drag with the mouse (or a finger) to
 stir the fluid and inject coloured dye, and switch between views of the dye,
-velocity, pressure, vorticity, and divergence fields.
+velocity, pressure, vorticity, and divergence fields. An optional
+**self-propulsion (active fluid)** term turns it into a model of active
+turbulence.
 
 **Try it live: <https://csviragh.github.io/navier-stokes-sim/>**
 
@@ -19,9 +21,12 @@ For a fluid with constant density ρ (we use ρ = 1), velocity **u**(x, t) and
 pressure p(x, t):
 
 ```
-∂u/∂t + (u·∇)u = −∇p/ρ + ν∇²u + f        (momentum)
-∇·u = 0                                   (incompressibility / mass)
+∂u/∂t + (u·∇)u = −∇p/ρ + ν∇²u + f − (1/τ)(|u| − v₀) u/|u|    (momentum)
+∇·u = 0                                                       (incompressibility / mass)
 ```
+
+(the last momentum term is optional and off by default, see
+[Self-propulsion](#self-propulsion-active-fluid) below)
 
 - **Momentum:** a fluid parcel accelerates because of pressure differences,
   viscous friction (kinematic viscosity ν), and external forces **f** (your
@@ -29,6 +34,54 @@ pressure p(x, t):
 - **Incompressibility:** the velocity field is divergence-free, so no fluid is
   created or destroyed anywhere. Pressure is not given by an equation of state.
   It is whatever field keeps ∇·u = 0, i.e. a Lagrange multiplier.
+
+### Self-propulsion (active fluid)
+
+With **Self-propulsion** switched on, the momentum equation gets the extra
+force per unit mass
+
+```
+f_active = −(1/τ) (|u| − v₀) · u/|u|
+```
+
+- **τ** (relaxation time, s) sets how quickly the local speed adapts;
+- **v₀** (target speed, domain units/s, the short side of the box is 1) is the
+  speed the fluid "wants" to move at;
+- **u/|u|** is the local unit vector of the flow, so the term only changes the
+  *speed*, never the *direction*.
+
+Where the fluid is slower than v₀ (|u| < v₀) the term accelerates it, and where
+it is faster (|u| > v₀) it brakes it. This is the self-propulsion term of
+Toner–Tu / Vicsek-type models of active matter (swimming bacteria, flocks).
+
+The term was requested as `1/tau(v(x)-v_0)*(v(x,t)/v(x,t))`, which we read as
+`(1/τ)(|v| − v₀) v/|v|`, i.e. the second `v(x,t)` is the magnitude |v| and
+the fraction is the unit vector. Written on the right-hand side of the momentum
+equation as a force it carries a **minus sign**; that minus is what makes it a
+*relaxation* toward v₀ (with a plus sign speeds away from v₀ would grow
+exponentially). If you prefer to read the user's expression as the term moved to
+the left-hand side, `∂u/∂t + … + (1/τ)(|u| − v₀) u/|u| = …`, it is the same
+equation.
+
+**Numerics.** On its own the term gives d|u|/dt = −(|u| − v₀)/τ along a fixed
+direction, which is solved exactly over each step:
+
+```
+|u|_new = v₀ + (|u| − v₀) · exp(−Δt/τ),     u_new = |u|_new · u/|u|
+```
+
+This is unconditionally stable for any Δt/τ and never overshoots v₀. On the
+MAC grid |u| is evaluated at each face (the other component is interpolated
+from the four neighbouring faces, as in advection). Where |u| < 10⁻⁶ the
+direction is undefined and the face is left unchanged, so fluid at rest stays
+at rest. Stir it, or use **Active turbulence quick start** (key `T`), which
+seeds weak random swirls that the term then amplifies.
+
+The step runs after advection and **before** the final projection, so the
+field stays divergence-free. Because a uniform speed is generally not
+compatible with ∇·u = 0 and the walls, |u| does **not** end up exactly v₀
+everywhere. In a 64² box with v₀ = 0.5 and τ = 0.25 s the mean speed settles
+at about 0.43 (≈ 87 % of v₀), with vortices and jets: active turbulence.
 
 The dye is a passive scalar c (one per RGB channel) that is carried by the flow
 and optionally diffuses (κ) and fades:
@@ -58,8 +111,10 @@ Dynamics for Games", GDC 2003) with operator splitting. Each time step Δt runs:
    through the flow (2nd-order Runge–Kutta), then **bilinearly interpolate** the
    old field there. Results are convex combinations of old values, so this step
    is unconditionally stable too.
-5. **Projection** again.
-6. **Dye:** implicit diffusion, semi-Lagrangian advection, and optional
+5. **Self-propulsion** (optional): exact relaxation of the local speed toward v₀,
+   `|u| ← v₀ + (|u| − v₀) e^(−Δt/τ)` along u/|u| (see above).
+6. **Projection** again.
+7. **Dye:** implicit diffusion, semi-Lagrangian advection, and optional
    exponential fade.
 
 **Grid.** The grid is a uniform staggered **MAC** grid. Pressure and dye sit at
@@ -89,10 +144,16 @@ pressure use zero-flux (Neumann) conditions.
 - **Controls:** viscosity, dye diffusion, time step, solver iterations, grid
   resolution, vorticity strength, dye fade, wall type, dye colour (or rainbow),
   brush radius, force strength, pause/play, single step, and reset.
+- **Self-propulsion (active fluid)** section: on/off toggle (default off), τ
+  (0.05–5 s, default 0.5 s), v₀ (0–2, default 0.5), and an *Active turbulence
+  quick start* button that switches the term on and seeds random weak flow.
 - FPS, grid size, and solver time per step are shown in the HUD. A short
   explanation of the equations is built into the panel.
 - **Keyboard:** `Space` pause, `S` step, `R` reset, `V` cycle view, `A` toggle
-  arrows, `H` hide the panel.
+  arrows, `P` toggle self-propulsion, `T` active-turbulence quick start, `H` hide
+  the panel.
+
+![Active turbulence with the self-propulsion term](docs/selfprop.png)
 
 ![Velocity + arrows, pressure, vorticity, divergence](docs/views.png)
 
@@ -115,7 +176,8 @@ src/
   solver/            # pure numerics, no DOM: unit-testable and portable
     grid.ts          #   MAC grid layout, indexing, field allocation
     ops.ts           #   kernels: boundaries, interpolation, diffusion,
-                     #   advection, projection, vorticity confinement
+                     #   advection, projection, vorticity confinement,
+                     #   self-propulsion (active fluid)
     fluid.ts         #   FluidSolver: state + time stepping, splat/stir input
     index.ts
   render/
@@ -129,6 +191,7 @@ src/
   style.css
 tests/
   solver.test.ts     # Vitest unit tests for the solver
+  selfprop.test.ts   # tests for the self-propulsion term
 index.html           # page layout, control panel, equations panel
 .github/workflows/
   ci.yml             # tests + build on push / PR
@@ -162,6 +225,17 @@ sim.updateDiagnostics(); // fills uc, vc, divergence, vorticity
 - a zero field stays exactly zero;
 - walls don't leak dye, viscosity dissipates energy, and the stir, reset, and
   resample helpers behave correctly.
+
+`tests/selfprop.test.ts` checks the self-propulsion term:
+
+- a uniform flow relaxes toward v₀ from below and from above, matching
+  `v₀ + (|u|₀ − v₀) e^(−t/τ)`, and an oblique flow keeps its direction;
+- the update is exact without overshoot even for Δt ≫ τ;
+- a zero field stays exactly zero (no NaNs from u/|u|);
+- 500 steps with the term on plus random stirring stay finite and bounded;
+- weak random flow is driven up to an rms speed near v₀ while staying
+  divergence-free;
+- with the term off, results are bit-identical whatever τ and v₀ are.
 
 ## Deploying to GitHub Pages
 

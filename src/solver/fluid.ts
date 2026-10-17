@@ -2,7 +2,7 @@
  * High-level 2D incompressible Navier–Stokes solver ("Stable Fluids",
  * J. Stam 1999) on a staggered MAC grid with solid walls.
  *
- *   ∂u/∂t + (u·∇)u = −∇p/ρ + ν∇²u + f      (momentum, ρ = 1)
+ *   ∂u/∂t + (u·∇)u = −∇p/ρ + ν∇²u + f − (1/τ)(|u| − v₀) u/|u|   (momentum, ρ = 1)
  *   ∇·u = 0                                 (incompressibility)
  *   ∂c/∂t + (u·∇)c = κ∇²c                   (passive dye, three RGB channels)
  *
@@ -11,8 +11,10 @@
  *   2. implicit viscous diffusion
  *   3. projection (Poisson solve for p, subtract ∇p)
  *   4. semi-Lagrangian self-advection (RK2 back-trace, bilinear interpolation)
- *   5. projection
- *   6. dye: implicit diffusion + semi-Lagrangian advection + optional fade
+ *   5. optional self-propulsion (active fluid): exact relaxation of the local
+ *      speed |u| toward v₀ with relaxation time τ, direction kept
+ *   6. projection
+ *   7. dye: implicit diffusion + semi-Lagrangian advection + optional fade
  *
  * This module has no DOM dependencies.
  */
@@ -23,7 +25,7 @@ import {
 import {
   advectScalar, advectVelocity, cellVelocity, computeDivergence, computeVorticity,
   diffuseScalar, diffuseU, diffuseV, project, sampleCell, sampleU, sampleV,
-  setScalarBoundary, setUBoundary, setVBoundary, vorticityConfinement,
+  selfPropulsion, setScalarBoundary, setUBoundary, setVBoundary, vorticityConfinement,
 } from './ops';
 
 export interface FluidParams {
@@ -43,6 +45,15 @@ export interface FluidParams {
   dyeDissipation: number;
   /** Tangential wall condition for velocity. */
   walls: WallType;
+  /**
+   * Enable the self-propulsion (active fluid) term
+   * −(1/τ)(|u| − v₀) u/|u| in the momentum equation. Off by default.
+   */
+  selfPropulsion: boolean;
+  /** Relaxation time τ of the self-propulsion term (s). */
+  selfPropTau: number;
+  /** Target speed v₀ of the self-propulsion term (domain units / s). */
+  selfPropV0: number;
 }
 
 export const defaultParams: FluidParams = {
@@ -54,6 +65,9 @@ export const defaultParams: FluidParams = {
   vorticity: 0,
   dyeDissipation: 0,
   walls: 'no-slip',
+  selfPropulsion: false,
+  selfPropTau: 0.5,
+  selfPropV0: 0.5,
 };
 
 export type RGB = readonly [number, number, number];
@@ -229,7 +243,10 @@ export class FluidSolver {
   /** Advance the simulation by one time step of length params.dt. */
   step(): void {
     const g = this.grid;
-    const { viscosity, diffusion, dt, iterations, sor, vorticity, dyeDissipation, walls } = this.params;
+    const {
+      viscosity, diffusion, dt, iterations, sor, vorticity, dyeDissipation, walls,
+      selfPropulsion: active, selfPropTau, selfPropV0,
+    } = this.params;
     const { u, v, u0, v0, pressure, tmp } = this;
 
     // 1. forces
@@ -253,10 +270,13 @@ export class FluidSolver {
     v0.set(v);
     advectVelocity(g, u, v, u0, v0, dt, walls);
 
-    // 5. projection
+    // 5. self-propulsion (active fluid): |u| → v₀ + (|u| − v₀)·exp(−Δt/τ) along u/|u|
+    if (active) selfPropulsion(g, u, v, u0, v0, selfPropTau, selfPropV0, dt, walls);
+
+    // 6. projection (restores ∇·u = 0 after the active forcing)
     project(g, u, v, pressure, tmp, dt, iterations, walls, sor);
 
-    // 6. dye
+    // 7. dye
     const fade = dyeDissipation > 0 ? Math.exp(-dyeDissipation * dt) : 1;
     for (const d of this.dye) {
       if (diffusion > 0) {
@@ -270,6 +290,65 @@ export class FluidSolver {
 
     this.time += dt;
     this.steps++;
+  }
+
+  /**
+   * Seed a weak random, divergence-free velocity field (sum of random
+   * vortices, deterministic for a given seed) plus a dye pattern, so that the
+   * self-propulsion term has a direction to amplify ("active turbulence").
+   * `amplitude` is the rough peak speed in domain units / s.
+   */
+  seedActiveTurbulence(seed = 1, amplitude = 0.05, vortices = 40): void {
+    const g = this.grid;
+    const { nx, ny, h } = g;
+    let a = seed >>> 0;
+    const rand = (): number => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const r = Math.max(2, Math.min(nx, ny) / 12);
+    // Stream function ψ at cell corners; u = ∂ψ/∂y, v = −∂ψ/∂x is discretely divergence free.
+    const cs = nx + 1;
+    const psi = new Float32Array(cs * (ny + 1));
+    for (let n = 0; n < vortices; n++) {
+      const cx = rand() * nx;
+      const cy = rand() * ny;
+      const s = (rand() < 0.5 ? -1 : 1) * amplitude * r * h * 1.65 * (0.5 + rand());
+      const reach = Math.ceil(3 * r);
+      for (let j = Math.max(0, Math.floor(cy) - reach); j <= Math.min(ny, Math.ceil(cy) + reach); j++)
+        for (let i = Math.max(0, Math.floor(cx) - reach); i <= Math.min(nx, Math.ceil(cx) + reach); i++) {
+          const dx = i - cx;
+          const dy = j - cy;
+          psi[i + cs * j] += s * Math.exp(-(dx * dx + dy * dy) / (2 * r * r));
+        }
+    }
+    for (let j = 1; j <= ny; j++)
+      for (let i = 1; i < nx; i++)
+        this.u[uIdx(g, i, j)] += (psi[i + cs * j] - psi[i + cs * (j - 1)]) / h;
+    for (let j = 1; j < ny; j++)
+      for (let i = 1; i <= nx; i++)
+        this.v[vIdx(g, i, j)] -= (psi[i + cs * j] - psi[i - 1 + cs * j]) / h;
+    setUBoundary(g, this.u, this.params.walls);
+    setVBoundary(g, this.v, this.params.walls);
+    // Colourful dye patches (a 8 × 5 checkerboard of hues) so the emerging
+    // flow pattern is visible at once.
+    const palette: RGB[] = [
+      [1.0, 0.25, 0.1], [0.1, 0.55, 1.0], [0.2, 1.0, 0.45], [1.0, 0.85, 0.1], [0.85, 0.2, 1.0],
+    ];
+    for (let j = 1; j <= ny; j++)
+      for (let i = 1; i <= nx; i++) {
+        const k = idx(g, i, j);
+        const px = Math.floor(((i - 0.5) / nx) * 8);
+        const py = Math.floor(((j - 0.5) / ny) * 5);
+        const c = palette[(px + 2 * py) % palette.length];
+        this.dye[0][k] += 0.8 * c[0];
+        this.dye[1][k] += 0.8 * c[1];
+        this.dye[2][k] += 0.8 * c[2];
+      }
+    for (const d of this.dye) setScalarBoundary(g, d);
   }
 
   /** Refresh cell-centred velocity, divergence and vorticity fields. */
