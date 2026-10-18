@@ -151,6 +151,23 @@
           unstable. Both 0 = the instantaneous term (exact / implicit update). The dye is not delayed.</p>
       </section>
 
+      <details id="corr-panel" class="panel-details" open>
+        <summary><h2>Order parameter / correlations</h2></summary>
+        <label class="check" title="Analyse the velocity field every few frames"><input type="checkbox" id="corr-on" />
+          Compute (every 6 frames)</label>
+        <canvas id="corr-hist" class="corr-plot" width="240" height="80" aria-label="Histogram of pairwise alignment cos θ_ij"></canvas>
+        <canvas id="corr-r" class="corr-plot" width="240" height="80" aria-label="Velocity correlation C(r)"></canvas>
+        <canvas id="corr-t" class="corr-plot" width="240" height="60" aria-label="Time series of the mean pairwise alignment, φ and ξ"></canvas>
+        <p class="hint mono" id="corr-info"></p>
+        <p class="hint">Over pairs of cells i ≠ j with direction v̂ = <b>u</b>/|<b>u</b>| (cells slower than
+          2 % of the mean speed have no direction and are left out): the distribution of cos θ<sub>ij</sub> =
+          v̂<sub>i</sub>·v̂<sub>j</sub> (30 000 random pairs) and its exact mean
+          ⟨cos θ<sub>ij</sub>⟩ = (|Σv̂|² − N)/(N(N − 1)) ≈ φ<sub>dir</sub>² — 1 for a perfect flock, 0 for random
+          directions. C(r) = ⟨v̂(x)·v̂(x + r)⟩ (blue) and the connected C(r) of the fluctuations
+          δv̂ = v̂ − ⟨v̂⟩ (green, Cavagna et al. 2010), radially averaged via FFT (wrapping on periodic axes,
+          zero-padded at walls). ξ = first zero of the connected C(r).</p>
+      </details>
+
       <section>
         <h2>Numerics</h2>
         <label class="slider">Time step Δt (s) <output id="dt-out"></output>

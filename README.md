@@ -376,6 +376,66 @@ References:
   oscillations they cause in robot flocks).
 
 
+### Order parameters: pairwise velocity correlations
+
+The **Order parameter / correlations** panel (collapsible, on by default)
+measures how aligned the flow is, the way flocking studies do for birds
+(Vicsek et al., *PRL* 75 (1995) 1226; Cavagna et al., "Scale-free correlations
+in starling flocks", *PNAS* 107 (2010) 11865). Only **directions** count:
+v̂ = u/|u| per cell. Cells slower than 2 % of the mean speed have no
+meaningful direction and are left out (unweighted, so a fast jet does not
+dominate; the speed-weighted polar order φ = |Σu|/Σ|u| is still shown for
+comparison).
+
+- **Pairwise alignment distribution** P(cos θ_ij), cos θ_ij = v̂_i·v̂_j, over
+  pairs of cells i ≠ j: a 40-bin histogram on [−1, 1] from 30 000 random pairs
+  per update. Random directions give the arcsine law 1/(π√(1 − c²)) (peaks at
+  ±1, symmetric); a flock piles up at cos θ = 1; two counter-flowing lanes give
+  two peaks at ±1 with ⟨cos θ⟩ ≈ 0.
+- **Scalar order parameter** ⟨cos θ_ij⟩, computed **exactly** over all
+  N(N − 1) pairs from the sum of directions:
+  ⟨cos θ_ij⟩ = (|Σv̂|² − N)/(N(N − 1)) = φ_dir² − (1 − φ_dir²)/(N − 1),
+  φ_dir = |Σv̂|/N. It is 1 for a perfect flock and ≈ 0 (O(1/N)) for random
+  directions. The sampled histogram mean is a check of it.
+- **Correlation vs distance** C(r) = ⟨v̂(x)·v̂(x + r)⟩ (pair-weighted, radially
+  binned in cells, r up to half the shorter side) and the **connected**
+  correlation of the fluctuations δv̂ = v̂ − ⟨v̂⟩, normalised so C_conn(0) = 1
+  (Cavagna et al.). Both come from FFT autocorrelations (Wiener–Khinchin): circular
+  on periodic axes (minimum-image separations), zero-padded to a power of two
+  ≥ 2n on walled axes so nothing wraps. Excluded cells are handled with a mask,
+  whose own autocorrelation counts the pairs at each separation. Packing
+  v̂_x + i v̂_y as one complex field, the connected part as Ẑ − μ M̂, and two
+  real-even spectra into one inverse transform keeps it at three 2D FFTs.
+- **Correlation length** ξ = first zero crossing of C_conn(r) (the Cavagna
+  definition), and ξ₁/ₑ where C_conn first falls below 1/e. "> r_max" means
+  there is no zero inside the range.
+- A **time series** (last 20 s) of ⟨cos θ_ij⟩, φ and ξ/r_max shows transitions.
+
+The histogram and exact mean update every 6 frames and C(r) every 12, and
+only while the box is ticked and the panel is open. The solver is unchanged.
+
+Measured in a headless browser (219 × 128 torus):
+
+| state | ⟨cos θ_ij⟩ | P(cos θ) | ξ (domain units) |
+| --- | --- | --- | --- |
+| start (weak random swirls) | 0.001 | arcsine, P(±1) ≈ 2.1 | 0.32 (vortex size) |
+| active turbulence `T`, t ≈ 3 s | 0.01 | arcsine | 0.34 |
+| active turbulence `T`, t ≈ 8 s | 0.000 | two peaks at ±1 (P ≈ 5.1 each): counter-flowing lanes | > 0.5 (C(r) = 0.55 at r = 0.25) |
+| active turbulence `T`, t ≈ 7.5 s (another random start) | 0.011 | arcsine | 0.33 |
+| flocking `F` (Cucker–Smale + self-propulsion) | 0.004 → 0.275 (1.8 s) → 0.773 (2.4 s) → 0.998 (3.6 s) → 1.000 | spike at cos θ = 1 | rises from 0.16 to 0.38 |
+| flocking `F`, self-propulsion off | 0.13 (1.2 s) → 0.94 (2.4 s) → 1.000 | spike at 1 | 0.19 → 0.39 |
+| delay oscillations `O` | ≤ 0.02 (peaks at 0.18 in one run) | arcsine | 0.09–0.13: the oscillating short waves decorrelate fast |
+| local viscosity delay `L` | 0.000–0.02 | arcsine | ≈ 0.20 (0.18–0.24) |
+| own-velocity delay `N` | jumps 0.52 → 0.69 → 0.10 → 0.93 → 0.79 → 0.99, then 1.000 (rotating flock) | spike at 1 | 0.16–0.37, fluctuating |
+
+In a perfect flock the connected C(r) measures what is left, the small
+fluctuations around the mean heading. Their ξ grows with the flock and is of
+the order of the box (0.27–0.39 here, or no zero at all). This is the
+finite-size, "scale-free" behaviour Cavagna et al. found in starlings (ξ ∝ L),
+not a real length scale of the model.
+
+![Order parameter / correlations panel in the ordered state (flocking quick start, t ≈ 5.6 s): P(cos θ_ij) is a spike at 1, ⟨cos θ_ij⟩ = 1.000, C(r) ≈ 1, connected C(r) crosses zero at ξ ≈ 0.38, and the time series shows the transition](docs/correlations.png)
+
 ## Numerical method
 
 The solver follows Jos Stam's **Stable Fluids** (SIGGRAPH 1999; "Real-Time Fluid
@@ -496,6 +556,9 @@ a little (∝ amplitude²). A uniform flow and a uniform dye stay exactly unifor
   (local sub-steps, explicit limit, S·Δt > 1, checkerboard). Quick starts:
   *Delay oscillations* (`O`), *Local viscosity delay* (`L`), *Own-velocity
   delay* (`N`).
+- **Order parameter / correlations** section (collapsible): P(cos θ_ij)
+  histogram with the exact ⟨cos θ_ij⟩, C(r) and connected C(r) with ξ, a 20 s
+  time series of ⟨cos θ_ij⟩, φ and ξ, a readout line and an on/off box.
 - **HUD time trace** (top left): φ, ⟨|u|⟩ and the overlap with the flow at the
   last reset / quick start, over the last 20 s of simulated time.
 - FPS, grid size, solver time per step, and (with a kernel or self-propulsion)
@@ -539,6 +602,7 @@ src/
                      #   explicit / semi-implicit delayed kernel update
     delay.ts         #   FieldHistory: ring buffer of past u, v fields
     stability.ts     #   rightmost root of λ + A e^{−λ t_self} − B e^{−λ t_nb}
+    correlations.ts  #   order parameters: P(cos θ_ij), exact ⟨cos θ_ij⟩, C(r), ξ (FFT)
     fluid.ts         #   FluidSolver: state + time stepping, splat/stir input
     index.ts
   render/
@@ -548,6 +612,7 @@ src/
     settings.ts      # user settings and defaults
     controls.ts      # binds the HTML control panel and keyboard shortcuts
     pointer.ts       # mouse / touch / pen input via Pointer Events
+    correlations.ts  # order parameter / correlations panel (plots, time series)
   main.ts            # wiring + animation loop
   style.css
 tests/
@@ -556,6 +621,7 @@ tests/
   periodic.test.ts   # tests for the periodic boundaries
   kernels.test.ts    # tests for the long-range viscosity / alignment kernels
   delays.test.ts     # tests for the own / neighbour delays (stability theory)
+  correlations.test.ts # tests for the order parameters / correlation functions
   lambert.ts         # Lambert W₀ for the delay characteristic equation
   fingerprint.ts     # bit-exact fingerprints of scripted runs
 index.html           # page layout, control panel, equations panel
@@ -591,6 +657,17 @@ sim.updateDiagnostics(); // fills uc, vc, divergence, vorticity
 - a zero field stays exactly zero;
 - walls don't leak dye, viscosity dissipates energy, and the stir, reset, and
   resample helpers behave correctly.
+
+`tests/correlations.test.ts` checks the order parameters. A uniform flow puts
+all of P(cos θ_ij) at 1 with ⟨cos θ_ij⟩ = 1 and C(r) = 1 (torus, walls, and
+channel). Random directions give ⟨cos θ_ij⟩ = O(1/N), a symmetric histogram that
+matches the arcsine law within 8 % per bin, and C(r > 0) ≈ 0. The FFT C(r) and
+connected C(r) match a brute-force sum over all pairs to 1e-9 on small grids
+(periodic, walled, both channel orientations, with and without excluded cells).
+The exact mean equals the brute-force pair mean to 1e-12, and the sampled pair
+mean and the histogram mean agree with it. Slow cells are excluded, a vortex
+lattice has ⟨cos⟩ ≈ 0 and a finite ξ, and the solver's cell layout is read
+correctly.
 
 `tests/kernels.test.ts` checks the nonlocal kernels. On periodic grids every
 kernel conserves momentum, never increases energy, and leaves uniform flow
@@ -707,6 +784,17 @@ Vite is configured with `base: './'`, so the build works under
   delay, 37.1 ms with t_self = t_nb = 0.42; local-only torus 17.6 ms without,
   16.7 ms with t_self = 0.5, t_nb = 2 (the explicit update replaces the implicit
   solve); no-slip with CS 46.7 vs 43.6 ms.
+- Order parameters: they use the cell-centred velocity of every grid cell as
+  one "agent", so neighbouring cells are strongly correlated by viscosity and
+  the solver's interpolation. ξ is resolution- and box-dependent (r ≤ half the
+  shorter side, and the connected C(r) of a near-perfect flock is dominated by
+  the box size). The 2 % slow-cell threshold is a choice. The histogram is a
+  Monte-Carlo estimate (30 000 pairs, about ±5 % per bin near the middle
+  for random directions); the mean is exact. Cost per analysis on 219 × 128 in a
+  headless browser: about 10 ms with C(r) (torus; about twice that with walls,
+  padded to 512 × 256) and 3 ms for the histogram and mean. Amortised over
+  6/12 frames it cut the frame rate by about 3 % in the headless test (23.0 →
+  22.2 fps).
 - Vorticity confinement amplifies grid-scale noise in a strongly ordered
   (flocking) flow, so the flocking quick start switches it off.
 - Vorticity confinement is integrated explicitly, so εΔt is clamped to 0.2 for

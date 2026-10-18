@@ -8,6 +8,7 @@ import { Renderer } from './render/renderer';
 import { hexToRgb, hsv } from './render/colormaps';
 import { bindControls } from './ui/controls';
 import { PointerInput } from './ui/pointer';
+import { CorrelationPanel } from './ui/correlations';
 import { defaultSettings, type Settings } from './ui/settings';
 
 const canvas = document.getElementById('sim') as HTMLCanvasElement;
@@ -81,6 +82,7 @@ function polarOrder(s: FluidSolver): number {
   return sp > 0 ? Math.hypot(mu, mv) / sp : 0;
 }
 const renderer = new Renderer(canvas, overlay);
+const corrPanel = new CorrelationPanel();
 const pointer = new PointerInput(canvas);
 
 /** Maximum stirring speed (domain units / s) to keep the CFL number sane. */
@@ -135,6 +137,7 @@ const trace = {
   refU: null as Float32Array | null, refV: null as Float32Array | null, refNorm: 0,
   reset(s: FluidSolver) {
     this.t = []; this.phi = []; this.speed = []; this.overlap = [];
+    corrPanel.reset();
     this.refU = Float32Array.from(s.u); this.refV = Float32Array.from(s.v);
     let n = 0;
     for (const x of this.refU) n += x * x;
@@ -364,6 +367,7 @@ function frame(now: number): void {
   const info = renderer.render(solver, settings.view, settings.arrows);
   trace.sample(solver);
   trace.draw();
+  corrPanel.update(solver, polarOrder);
 
   frames++;
   if (now - fpsTime >= 500) {
@@ -386,7 +390,7 @@ requestAnimationFrame(frame);
 // Handy for debugging from the console and for automated smoke tests.
 declare global {
   interface Window {
-    fluid: { readonly solver: FluidSolver; settings: Settings; trace: typeof trace };
+    fluid: { readonly solver: FluidSolver; settings: Settings; trace: typeof trace; corr: CorrelationPanel };
   }
 }
 window.fluid = {
@@ -395,4 +399,5 @@ window.fluid = {
   },
   settings,
   trace,
+  corr: corrPanel,
 };
