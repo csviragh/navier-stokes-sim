@@ -114,12 +114,27 @@
         </label>
         <label class="check" id="k-mt-row" title="Divide by the local kernel mass (only differs next to walls)"><input type="checkbox" id="k-mt" />
           Motsch–Tadmor normalisation</label>
+        <label class="check" id="k-delay-row" title="Toggle (D)"><input type="checkbox" id="k-delay" />
+          Finite interaction speed (retarded)</label>
+        <label class="slider" id="k-vint-row">Interaction speed v<sub>int</sub> <output id="k-vint-out"></output>
+          <input type="range" id="k-vint" min="-1.3" max="1.4" step="0.01" />
+        </label>
+        <label class="slider" id="k-shells-row" title="Radial shells with their own delay (+1 tail shell); cost ∝ shells on walled grids">Delay shells M <output id="k-shells-out"></output>
+          <input type="range" id="k-shells" min="2" max="16" step="1" />
+        </label>
         <canvas id="k-plot" width="240" height="80"></canvas>
+        <p class="hint mono" id="k-delay-info"></p>
         <p class="hint" id="k-note"></p>
         <button id="flocking" class="wide" title="Cucker–Smale + self-propulsion on periodic boundaries (F)">🐦 Flocking quick start</button>
+        <button id="delayed-flocking" class="wide" title="Flocking with a finite interaction speed v_int = 0.1 (L)">📡 Delayed flocking quick start</button>
         <p class="hint">Adds S∫K(|x−y|)(<b>u</b>(y) − <b>u</b>(x))dy to the local viscosity
           (∫K = 1, so S is a relaxation rate), or −ν_s(−Δ)<sup>s</sup><b>u</b>. Exact in Fourier
           space on periodic boundaries; with walls a zero-padded (non-wrapping) convolution.</p>
+        <p class="hint"><b>Finite interaction speed</b>: a point at distance r only feels
+          <b>u</b>(y, t − r/v<sub>int</sub>), the velocity y had when its signal left. Information
+          spreads no faster than v<sub>int</sub> (light cone; the short side is crossed in
+          1/v<sub>int</sub> s). Slider maximum = ∞ recovers the instantaneous kernel. Speeds in
+          domain units/s, like v₀.</p>
       </section>
 
       <section>
@@ -185,6 +200,23 @@
           All of them conserve momentum on periodic boundaries and only ever remove kinetic
           energy. Combined with self-propulsion they give a Toner–Tu-like active "flock":
           the fluid moves at ≈ v₀ and the kernel aligns its direction over distance R.</p>
+        <p><b>Finite interaction speed</b> (optional, <i>retarded</i> alignment): signals travel
+          at speed v<sub>int</sub>, so the velocity received from distance r is r/v<sub>int</sub>
+          old:</p>
+        <div class="eq"><b>f</b><sub>K</sub>(x, t) = S ∫ K(r) (<b>u</b>(y, t − r/v<sub>int</sub>) − <b>u</b>(x, t)) dy,  r = |x − y|,  t<sub>del</sub> = r/v<sub>int</sub></div>
+        <p>as for the retarded potentials of electrodynamics, and as in delayed Cucker–Smale
+          models. The kernel is split into M equal-mass radial shells (plus a tail shell holding
+          the last 0.5 % of its mass); shell m uses the delay of its <i>outer</i> radius, so no
+          signal outruns v<sub>int</sub>. Past velocity fields are kept in a ring buffer (on the torus
+          as their Fourier spectra) and linearly interpolated in time, so the received field
+          is Σ<sub>m</sub> K<sub>m</sub> * <b>u</b>(t − τ<sub>m</sub>) + K(0)<b>u</b>(x, t), updated
+          semi-implicitly, <b>u</b> ← (<b>u</b> + SΔt·<b>w</b>)/(1 + SΔt·c), which is a convex combination of
+          present and past values and therefore stable for any Δt and v<sub>int</sub>.
+          v<sub>int</sub> → ∞ gives back the instantaneous kernel. Delays slow down (but do not
+          prevent) flocking. The total momentum lags behind, and only momentum plus the
+          "in-flight" part S Σ μ<sub>m</sub> ∫<sub>t−τ<sub>m</sub></sub><sup>t</sup> <b>u</b> ds is conserved.
+          Pressure still acts instantly (the fluid is incompressible), so the light cone
+          applies to the alignment interaction, not to the whole flow.</p>
         <p><b>Boundaries</b>: <i>no-slip</i> walls (fluid sticks to the walls, u = 0),
           <i>free-slip</i> walls (no flow through the walls, but it slides along them),
           <i>periodic</i> (a torus: whatever leaves on one side re-enters on the opposite
@@ -204,7 +236,8 @@
           becomes more diffusive).</p>
         <p>Shortcuts: <kbd>Space</kbd> pause, <kbd>S</kbd> step, <kbd>R</kbd> reset,
           <kbd>V</kbd> next view, <kbd>A</kbd> arrows, <kbd>B</kbd> next boundary, <kbd>P</kbd> self-propulsion,
-          <kbd>T</kbd> active-turbulence quick start, <kbd>K</kbd> next kernel, <kbd>F</kbd> flocking quick start, <kbd>H</kbd> hide panel.</p>
+          <kbd>T</kbd> active-turbulence quick start, <kbd>K</kbd> next kernel, <kbd>F</kbd> flocking quick start, <kbd>D</kbd> finite interaction speed,
+          <kbd>L</kbd> delayed-flocking quick start, <kbd>H</kbd> hide panel.</p>
       </details>
     </aside>
 

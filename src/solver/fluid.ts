@@ -31,7 +31,7 @@ import {
   selfPropulsion, setScalarBoundary, setUBoundary, setVBoundary, uLastI, vLastJ,
   vorticityConfinement,
 } from './ops';
-import { NonlocalOperator, type KernelParams, type KernelType } from './kernels';
+import { DelayHistory, NonlocalOperator, type KernelParams, type KernelType } from './kernels';
 
 export interface FluidParams {
   /** Kinematic viscosity ν (domain units² / s; the shorter side has length 1). */
@@ -76,6 +76,16 @@ export interface FluidParams {
   kernelS: number;
   /** Motsch–Tadmor local normalisation (only differs from the default next to walls). */
   kernelMT: boolean;
+  /**
+   * Finite interaction speed (retarded kernel): the received field is
+   * K * u(·, t − r/v_int) instead of K * u(·, t). Off by default; ignored for
+   * 'fractional' and 'none'.
+   */
+  kernelDelay: boolean;
+  /** Interaction (signal) speed v_int in domain units / s; ∞ = instantaneous. */
+  kernelVInt: number;
+  /** Number of radial delay shells M (plus one tail shell). */
+  kernelShells: number;
 }
 
 export const defaultParams: FluidParams = {
@@ -97,7 +107,34 @@ export const defaultParams: FluidParams = {
   kernelAlpha: 3,
   kernelS: 0.5,
   kernelMT: false,
+  kernelDelay: false,
+  kernelVInt: 1,
+  kernelShells: 8,
 };
+
+/** Memory budget of the delay history, per velocity component (bytes). */
+export const DELAY_BUDGET_BYTES = 32 * 2 ** 20;
+
+export interface DelayInfo {
+  /** Whether the retarded path is used for the current settings. */
+  active: boolean;
+  rCut: number;
+  rTail: number;
+  /** Longest delay t_del,max (s). */
+  tauMax: number;
+  /** History sampling interval (s). */
+  interval: number;
+  /** Frames needed / stored / capacity (per component). */
+  framesNeeded: number;
+  framesStored: number;
+  capacity: number;
+  /** Bytes currently held by the history (both components). */
+  bytes: number;
+  /** Shell outer radii (domain units) and masses, u sub-grid. */
+  rOuter: number[];
+  mass: number[];
+  selfWeight: number;
+}
 
 export type RGB = readonly [number, number, number];
 
@@ -127,6 +164,8 @@ export class FluidSolver {
   };
 
   private nl?: { key: string; u: NonlocalOperator; v: NonlocalOperator };
+  /** Past velocity fields for the retarded kernel (cleared on reset / boundary change). */
+  private readonly hist = { u: new DelayHistory(), v: new DelayHistory() };
 
   /** Simulated time (s) and step counter. */
   time = 0;
@@ -167,6 +206,7 @@ export class FluidSolver {
       if (periodicY(before) && !periodicY(walls)) {
         for (let i = 1; i <= g.nx; i++) this.v[vIdx(g, i, g.ny)] = 0;
       }
+      this.clearDelayHistory();
       for (const d of this.dye) setScalarBoundary(g, d, walls);
       setUBoundary(g, this.u, walls);
       setVBoundary(g, this.v, walls);
@@ -186,6 +226,45 @@ export class FluidSolver {
     ]) f.fill(0);
     this.time = 0;
     this.steps = 0;
+    this.clearDelayHistory();
+  }
+
+  /** Forget the stored velocity history of the retarded kernel. */
+  clearDelayHistory(): void {
+    this.hist.u.clear();
+    this.hist.v.clear();
+  }
+
+  /** True if the next step uses the retarded (finite-speed) kernel. */
+  delayActive(): boolean {
+    const p = this.params;
+    return p.kernelDelay && (p.kernel === 'gaussian' || p.kernel === 'cucker-smale' || p.kernel === 'power')
+      && Number.isFinite(p.kernelVInt) && p.kernelVInt > 0 && p.kernelStrength > 0;
+  }
+
+  /** Shells, delays and history memory of the retarded kernel (for the UI). */
+  delayInfo(): DelayInfo | null {
+    const p = this.params;
+    if (!(p.kernel === 'gaussian' || p.kernel === 'cucker-smale' || p.kernel === 'power')) return null;
+    const ops = this.kernelOperators();
+    const su = ops.u.shells(p.kernelShells);
+    const sv = ops.v.shells(p.kernelShells);
+    const vInt = Number.isFinite(p.kernelVInt) && p.kernelVInt > 0 ? p.kernelVInt : Infinity;
+    let rMax = 0;
+    for (const sh of [su, sv]) for (let m = 0; m < sh.rOuter.length; m++) if (sh.mass[m] > 0) rMax = Math.max(rMax, sh.rOuter[m]);
+    const tauMax = rMax / vInt;
+    const h = this.hist.u;
+    const interval = h.interval || p.dt;
+    return {
+      active: this.delayActive(),
+      rCut: su.rCut, rTail: su.rTail, tauMax,
+      interval,
+      framesNeeded: Number.isFinite(tauMax) ? Math.ceil(tauMax / interval) + 1 : 0,
+      framesStored: h.frames.length,
+      capacity: h.capacity,
+      bytes: this.hist.u.bytes() + this.hist.v.bytes(),
+      rOuter: Array.from(su.rOuter), mass: Array.from(su.mass), selfWeight: su.selfWeight,
+    };
   }
 
   /**
@@ -416,6 +495,25 @@ export class FluidSolver {
     setVBoundary(g, v, walls);
   }
 
+  /**
+   * Retarded kernel: each point aligns with the velocity other points had
+   * r/v_int ago (r = distance). The current field is recorded into the
+   * history afterwards. See NonlocalOperator.applyRetarded.
+   */
+  private applyKernelDelayed(): void {
+    const g = this.grid;
+    const { u, v } = this;
+    const { dt, walls, kernelVInt, kernelShells } = this.params;
+    const ops = this.kernelOperators();
+    const t = this.time;
+    ops.u.applyRetarded((i, j) => u[uIdx(g, i + 1, j + 1)], (i, j, x) => { u[uIdx(g, i + 1, j + 1)] = x; },
+      dt, t, kernelVInt, kernelShells, this.hist.u, DELAY_BUDGET_BYTES);
+    ops.v.applyRetarded((i, j) => v[vIdx(g, i + 1, j + 1)], (i, j, x) => { v[vIdx(g, i + 1, j + 1)] = x; },
+      dt, t, kernelVInt, kernelShells, this.hist.v, DELAY_BUDGET_BYTES);
+    setUBoundary(g, u, walls);
+    setVBoundary(g, v, walls);
+  }
+
   /** Advance the simulation by one time step of length params.dt. */
   step(): void {
     const g = this.grid;
@@ -439,7 +537,12 @@ export class FluidSolver {
     }
 
     // 2b. nonlocal (long-range) viscosity / alignment
-    if (this.params.kernel !== 'none') this.applyKernel();
+    if (this.delayActive()) this.applyKernelDelayed();
+    else {
+      // history only stays valid while it is recorded every step
+      if (this.hist.u.frames.length || this.hist.v.frames.length) this.clearDelayHistory();
+      if (this.params.kernel !== 'none') this.applyKernel();
+    }
 
     // 3. projection
     project(g, u, v, pressure, tmp, dt, iterations, walls, sor);

@@ -17,6 +17,34 @@ const statsEl = document.getElementById('stats')!;
 const legendEl = document.getElementById('legend')!;
 
 const settings: Settings = { ...defaultSettings };
+
+/**
+ * "Delayed flocking" quick start: long-range Cucker–Smale alignment +
+ * self-propulsion on a torus with a finite interaction speed. Information
+ * needs r/v_int to cross distance r, so local swirls align long before they
+ * hear about the rest of the flock. Measured on 205×128: with v_int = ∞ the
+ * flock is aligned (φ ≈ 1) after ~2 s; with v_int = 0.1 it takes ~25 s, with
+ * swirling domains meanwhile and the speed held at ~0.3 v₀ by the drag of the
+ * retarded (older, disordered) velocities.
+ */
+const DELAYED_FLOCKING: Partial<Settings> = {
+  kernel: 'cucker-smale', kernelStrength: 10, kernelRange: 0.15, kernelBeta: 1, kernelMT: false,
+  kernelDelay: true, kernelVInt: 0.1, kernelShells: 8,
+  vorticity: 0, selfPropulsion: true, walls: 'periodic',
+  // keep the dye so the swirling domains stay visible while they slowly align
+  dyeDissipation: 0,
+};
+
+/** Polar order parameter φ = |⟨u⟩| / ⟨|u|⟩ (1 = perfectly aligned flock); needs updateDiagnostics(). */
+function polarOrder(s: FluidSolver): number {
+  const g = s.grid;
+  let mu = 0, mv = 0, sp = 0;
+  for (let j = 1; j <= g.ny; j++) for (let i = 1; i <= g.nx; i++) {
+    const k = i + g.stride * j;
+    mu += s.uc[k]; mv += s.vc[k]; sp += Math.hypot(s.uc[k], s.vc[k]);
+  }
+  return sp > 0 ? Math.hypot(mu, mv) / sp : 0;
+}
 const renderer = new Renderer(canvas, overlay);
 const pointer = new PointerInput(canvas);
 
@@ -42,6 +70,9 @@ function solverParams(s: Settings): Partial<FluidParams> {
     kernelAlpha: s.kernelAlpha,
     kernelS: s.kernelS,
     kernelMT: s.kernelMT,
+    kernelDelay: s.kernelDelay,
+    kernelVInt: s.kernelVInt,
+    kernelShells: s.kernelShells,
   };
 }
 
@@ -167,6 +198,16 @@ const controls = bindControls(settings, {
     solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05 * Math.max(settings.selfPropV0, 0.1) / 0.5);
     renderer.resetScales();
   },
+  onDelayedFlocking() {
+    // Quick start: the flocking setup with a finite interaction speed, see
+    // DELAYED_FLOCKING for the parameters and what to look for.
+    Object.assign(settings, DELAYED_FLOCKING);
+    settings.paused = false;
+    solver.setParams(solverParams(settings));
+    solver.reset();
+    solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05 * Math.max(settings.selfPropV0, 0.1) / 0.5);
+    renderer.resetScales();
+  },
 });
 
 let resizeTimer: number | undefined;
@@ -192,8 +233,10 @@ function frame(now: number): void {
     const fps = (frames * 1000) / (now - fpsTime);
     fpsEl.textContent = `${fps.toFixed(0)} fps`;
     statsEl.textContent =
-      `${solver.grid.nx}×${solver.grid.ny} · step ${stepMs.toFixed(1)} ms · t = ${solver.time.toFixed(1)} s`;
+      `${solver.grid.nx}×${solver.grid.ny} · step ${stepMs.toFixed(1)} ms · t = ${solver.time.toFixed(1)} s` +
+      (settings.kernel !== 'none' || settings.selfPropulsion ? ` · order φ = ${polarOrder(solver).toFixed(2)}` : '');
     legendEl.textContent = info.legend;
+    controls.setDelayInfo(settings.kernel !== 'none' && settings.kernel !== 'fractional' ? solver.delayInfo() : null);
     frames = 0;
     fpsTime = now;
   }

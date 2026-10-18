@@ -23,6 +23,12 @@ export interface Settings {
   kernelAlpha: number;
   kernelS: number;
   kernelMT: boolean;
+  /** Finite interaction speed (retarded kernel) on/off. */
+  kernelDelay: boolean;
+  /** Interaction speed v_int (domain units / s); Infinity = instantaneous. */
+  kernelVInt: number;
+  /** Number of radial delay shells. */
+  kernelShells: number;
   dt: number;
   iterations: number;
   /** Number of cells along the shorter side of the window. */
@@ -52,6 +58,9 @@ export const defaultSettings: Settings = {
   kernelAlpha: 3,
   kernelS: 0.5,
   kernelMT: false,
+  kernelDelay: false,
+  kernelVInt: 1,
+  kernelShells: 8,
   dt: 1 / 60,
   iterations: 20,
   resolution: 128,

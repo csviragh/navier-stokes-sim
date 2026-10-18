@@ -6,7 +6,9 @@ stir the fluid and inject coloured dye, and switch between views of the dye,
 velocity, pressure, vorticity, and divergence fields. Boundaries can be solid
 walls (no-slip or free-slip), fully **periodic**, or periodic in x with walls in
 y (a channel). An optional **self-propulsion (active fluid)** term turns it
-into a model of active turbulence.
+into a model of active turbulence, and long-range alignment kernels (optionally
+with a **finite interaction speed**, i.e. retarded, time-delayed interaction)
+turn it into a flock.
 
 **Try it live: <https://csviragh.github.io/navier-stokes-sim/>**
 
@@ -175,6 +177,111 @@ Trans. R. Soc. A* 372 (2014).
 
 ![Cucker–Smale alignment + self-propulsion on a torus (vorticity + arrows)](docs/kernels-flocking.png)
 
+### Finite interaction speed (retarded alignment)
+
+With the kernel on, tick **Finite interaction speed (retarded)** (`D`) to let
+the alignment signal travel at a finite speed v_int. A point at distance r then
+feels the velocity the other point had when its signal left:
+
+```
+f_K(x, t) = S ∫ K(r) ( u(y, t − r/v_int) − u(x, t) ) dy,     r = |x − y|  (minimum image on periodic axes)
+t_del(r)  = r / v_int
+```
+
+Only the received field K * u is retarded. The point's own velocity u(x, t) is
+current. This is the retarded-potential construction of electrodynamics
+(Jackson, *Classical Electrodynamics*, ch. 6) applied to velocity alignment. The
+particle versions are the delayed Cucker–Smale models (refs below). v_int is in
+domain units/s like v₀, so the short side of the domain is crossed in
+1/v_int seconds. v_int → ∞ (slider maximum, "∞ (instant)") gives back the
+instantaneous kernel. That setting, and the toggle being off, run exactly the
+old code path, bit-identical to commit dc86501.
+
+**Scheme.**
+
+- *Shells.* The normalised kernel is split radially, K = K(0)δ + Σₘ Kₘ + K_tail.
+  Kₘ (m = 0 … M−1, slider "Delay shells M", 2–16, default 8) are **equal-mass**
+  shells r ∈ (rₘ, rₘ₊₁] inside R_cut, the radius that encloses 99.5 % of ∫K. The
+  tail shell holds the remaining 0.5 % out to r_tail, beyond which less than 10⁻¹²
+  of the mass lies. Equal mass puts narrow shells where a heavy-tailed kernel such
+  as Cucker–Smale has most of its weight. The r = 0 term (a point's own velocity)
+  is never delayed. Each shell uses the delay of its **outer** radius,
+  τₘ = rₘ₊₁/v_int, so no part of the kernel ever gets information faster than
+  v_int. The price is that delays are rounded up by at most one shell width. The
+  shell spectra K̂ₘ are cached per kernel, grid, boundary, and M. Changing v_int
+  or Δt needs no recomputation.
+- *History.* A ring buffer holds past velocity fields (each component on its own
+  staggered sub-grid) as they enter the kernel step, time-stamped with simulation
+  time. On the torus it stores their **Fourier spectra**, so every frame is
+  FFT'd once when stored. A step then costs one forward FFT, M + 1 complex
+  multiply-adds, and one inverse FFT. With walls it stores real fields and
+  transforms one delayed field per shell and step (zero-padded, non-wrapping
+  convolution as before).
+- *Time interpolation.* u(t − τₘ) is interpolated linearly between the two
+  stored frames that bracket it. Before the history fills, missing delays use the
+  oldest stored frame (or the current field). **Reset**, a boundary change, a grid
+  change, or switching the delay off clears the history.
+- *Update.* Semi-implicit, like the walled instantaneous kernel:
+
+  ```
+  w     = K(0) u(x, t) + Σₘ (Kₘ * u(·, t − τₘ))(x)
+  u_new = (u + SΔt·w) / (1 + SΔt·c)          c = ∫K = 1 on the torus, c(x) = K * 1_domain with walls
+  ```
+
+  (Motsch–Tadmor uses a = SΔt/c as before.) u_new is a convex combination of
+  present and past values, so the update obeys a max principle and is stable for
+  any Δt, S, and v_int. On the torus the instantaneous kernel uses the exact
+  Fourier exponential instead. A huge v_int therefore matches it to O((SΔt)²) per
+  step, and matches an independent semi-implicit reference to 10⁻¹².
+- *Memory cap.* The history keeps at most 32 MB per velocity component (≤ 512
+  frames). If t_del,max = r_tail/v_int needs more frames than that, frames are
+  recorded every t_del,max/(capacity − 2) seconds instead of every step, still
+  interpolated linearly. The panel shows t_del,max, R_cut, r_tail, the number of
+  frames stored and their spacing ("memory-capped" when coarser than Δt), and the
+  memory used. The kernel plot shades the shells and draws the delay staircase.
+
+**What holds.**
+
+- *Causality (light cone).* An impulse at y is felt at distance r no earlier than
+  r/v_int − Δt_hist (one history interval, from the linear interpolation in
+  time), and no later than the delay of its shell plus one step. This is tested
+  on periodic and walled grids. It holds for the alignment interaction only. The
+  fluid is incompressible, so the pressure projection still acts instantly
+  everywhere.
+- *Momentum.* The retarded force is not reciprocal in time, so total momentum M
+  is not conserved instantly after a kick. What is conserved is momentum plus the
+  "in-flight" part, `M(t) + S Σₘ μₘ ∫_{t−τₘ}^{t} M(s) ds` (μₘ = shell mass). The
+  scheme conserves its discrete analogue exactly. Once the history is stationary
+  (M constant over t_del,max), M itself is conserved.
+- *Uniform flow* stays uniform, since every delay sees the same value.
+
+**What it does to a flock.** On a 205 × 128 torus with Cucker–Smale (S = 10/s,
+R = 0.15, β = 1) plus self-propulsion, weak random swirls align into a global
+flock (polar order φ = |⟨u⟩|/⟨|u|⟩ ≈ 1) after about 2 s when v_int = ∞. The times
+grow to about 12 s with v_int = 0.2, about 25 s with v_int = 0.1, and more than
+40 s with v_int = 0.05. Meanwhile large swirling domains persist, because each
+region aligns with its neighbours long before it hears about the rest of the
+flock. The retarded, still disordered velocities also act as a drag. The mean
+speed stays near 0.3 v₀ until the flock has ordered, then slowly recovers to v₀.
+In this model the delay did not destabilise the flock or cause sustained
+oscillations in any run. That fits the linear analysis, because with a current
+self term λ = −S + S K̂ e^{−λτ} has only stable roots for |K̂| < 1, and with
+delayed Cucker–Smale consensus results (Pignotti & Trélat 2018). Oscillations
+need the *reaction* itself to be delayed (the self term too), as in robot
+flocks with sensor and actuation latency. **📡 Delayed flocking quick start**
+(`L`) sets this up with v_int = 0.1, M = 8, periodic boundaries, no vorticity
+confinement, and no dye fade. Watch the order parameter φ in the HUD.
+
+References on delays in alignment / flocking: R. Erban, J. Haškovec & Y. Sun,
+"A Cucker–Smale model with noise and delay", *SIAM J. Appl. Math.* 76 (2016)
+1535–1557; C. Pignotti & E. Trélat, "Convergence to consensus of the general
+finite-dimensional Cucker–Smale model with time-varying delays", *Commun. Math.
+Sci.* 16 (2018) 2053–2076; C. Virágh et al., "Flocking algorithm for autonomous
+flying robots", *Bioinspir. Biomim.* 9 (2014) 025012 (communication and sensor
+delays in real robot flocks).
+
+![Delayed flocking quick start at t ≈ 7 s: swirling domains still aligning (φ = 0.51); the kernel plot shows the delay shells and the delay staircase](docs/delay-flocking.png)
+
 ## Numerical method
 
 The solver follows Jos Stam's **Stable Fluids** (SIGGRAPH 1999; "Real-Time Fluid
@@ -287,11 +394,18 @@ a little (∝ amplitude²). A uniform flow and a uniform dye stay exactly unifor
   (or of the fractional multiplier), and a *Flocking quick start* button that
   selects Cucker–Smale, self-propulsion, periodic boundaries, and turns off
   vorticity confinement.
-- FPS, grid size, and solver time per step are shown in the HUD. A short
+- **Finite interaction speed** (in the same section): toggle (default off),
+  v_int slider (log scale 0.05–20 domain units/s plus ∞ = instant, default 1),
+  delay shells M (2–16, default 8), a live line with t_del,max, history frames
+  and memory, the shells and delay staircase drawn in the kernel plot, and a
+  *Delayed flocking quick start* button.
+- FPS, grid size, solver time per step, and (with a kernel or self-propulsion)
+  the polar order parameter φ are shown in the HUD. A short
   explanation of the equations is built into the panel.
 - **Keyboard:** `Space` pause, `S` step, `R` reset, `V` cycle view, `A` toggle
   arrows, `B` cycle boundaries, `P` toggle self-propulsion, `T`
   active-turbulence quick start, `K` cycle kernel, `F` flocking quick start,
+  `D` toggle finite interaction speed, `L` delayed-flocking quick start,
   `H` hide the panel.
 
 ![Active turbulence with the self-propulsion term](docs/selfprop.png)
@@ -322,7 +436,8 @@ src/
                      #   self-propulsion (active fluid)
     poisson.ts       #   direct periodic pressure solver (FFT + tridiagonal)
     fft.ts           #   radix-2 / Bluestein FFT for any length
-    kernels.ts       #   nonlocal viscosity / alignment kernels (spectral)
+    kernels.ts       #   nonlocal viscosity / alignment kernels (spectral),
+                     #   retarded shells + delay history (finite v_int)
     fluid.ts         #   FluidSolver: state + time stepping, splat/stir input
     index.ts
   render/
@@ -339,7 +454,8 @@ tests/
   selfprop.test.ts   # tests for the self-propulsion term
   periodic.test.ts   # tests for the periodic boundaries
   kernels.test.ts    # tests for the long-range viscosity / alignment kernels
-  fingerprint.ts     # bit-exact fingerprint of a scripted wall-mode run
+  delay.test.ts      # tests for the finite interaction speed (retarded kernels)
+  fingerprint.ts     # bit-exact fingerprints of scripted runs
 index.html           # page layout, control panel, equations panel
 .github/workflows/
   ci.yml             # tests + build on push / PR
@@ -383,6 +499,23 @@ rate, and s < 1 flattens the spectrum. The walled convolution doesn't wrap
 across walls and obeys a max principle. Long runs with kernels, self-propulsion,
 and stirring stay finite on all boundary types. With kernel None, all four
 boundary types are bit-identical to commit 22fd8ba.
+
+`tests/delay.test.ts` checks the finite interaction speed. With the toggle
+off, or with v_int = ∞, eight kernel and boundary scenarios are bit-identical
+to commit dc86501. The shells partition the kernel exactly
+(K(0)δ + Σ Kₘ = K in real space, and to 10⁻¹² in Fourier space), their masses
+sum to 1, and every offset gets a delay of at least r/v_int (except the ultra-tail beyond r_tail, < 10⁻¹² of the mass). A huge v_int
+reproduces the walled instantaneous kernel to 10⁻¹³, and on the torus an
+independent semi-implicit reference to 10⁻¹² (the exact exponential to
+O((SΔt)²)). A uniform flow stays uniform. The light-cone test checks that an
+impulse is not felt at distance r before r/v_int − Δt and is felt by the delay
+of its shell plus one step (torus and walls). Momentum is conserved for a
+stationary history, and the discrete "momentum + in-flight momentum"
+invariant holds exactly after a kick. Runs with tiny v_int, large Δt, strong S,
+self-propulsion, and stirring stay finite on all boundaries. The memory cap
+coarsens the history instead of growing it. Reset, boundary changes, and
+switching the delay off clear the history, and start-up uses the current
+field.
 
 `tests/selfprop.test.ts` checks the self-propulsion term:
 
@@ -443,6 +576,15 @@ Vite is configured with `base: './'`, so the build works under
   development CPU (about 32 ms per step in total on a torus, 44 ms with
   no-slip walls). The FFTs run on the CPU.
 - The fractional Laplacian only works on fully periodic boundaries.
+- Finite interaction speed: on a torus it adds only about 2–3 ms per step
+  (205 × 128: 32 → 34 ms), because past spectra are stored. With walls it costs
+  one padded FFT per shell, about 3× the instantaneous kernel (42 → 124 ms per
+  step at M = 8). Use fewer shells there. The history can use up to 64 MB
+  (2 × 32 MB). Delays are rounded up to the shell's outer radius, and the time
+  interpolation can make a signal arrive up to one history interval early. The
+  fractional Laplacian has no real-space kernel, so it ignores the delay. The
+  light cone applies to the alignment term only, because the incompressibility
+  projection is instantaneous.
 - Vorticity confinement amplifies grid-scale noise in a strongly ordered
   (flocking) flow, so the flocking quick start switches it off.
 - Vorticity confinement is integrated explicitly, so εΔt is clamped to 0.2 for

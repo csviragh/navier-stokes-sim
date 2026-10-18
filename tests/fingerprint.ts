@@ -36,3 +36,27 @@ export function wallScenario(walls: WallType): string {
   r.resampleFrom(s);
   return hashFields(s.u, s.v, s.pressure, ...s.dye, s.uc, s.vc, s.divergence, s.vorticity, r.u, r.v, ...r.dye);
 }
+
+/** Kernel scenarios (fingerprints of the instantaneous kernel paths recorded at dc86501). */
+export const KERNEL_CASES: [WallType, 'gaussian' | 'cucker-smale' | 'power' | 'fractional', boolean][] = [
+  ['periodic', 'gaussian', false], ['periodic', 'cucker-smale', false], ['periodic', 'power', false],
+  ['periodic', 'fractional', false], ['no-slip', 'cucker-smale', true], ['free-slip', 'gaussian', false],
+  ['periodic-x', 'power', false], ['periodic-x', 'cucker-smale', true],
+];
+
+export function kernelScenario(
+  walls: WallType, kernel: 'gaussian' | 'cucker-smale' | 'power' | 'fractional', mt: boolean,
+  extra: Record<string, unknown> = {},
+): string {
+  const s = new FluidSolver(32, 24, {
+    walls, viscosity: 1e-4, vorticity: 1, iterations: 20, kernel,
+    kernelStrength: kernel === 'fractional' ? 1e-3 : 4, kernelRange: 0.07, kernelBeta: 1.3, kernelAlpha: 3.5,
+    kernelS: 0.6, kernelMT: mt, selfPropulsion: true, selfPropTau: 0.4, selfPropV0: 0.5, ...extra,
+  });
+  s.seedActiveTurbulence(11, 0.1);
+  for (let n = 0; n < 40; n++) {
+    s.stir(3 + (n % 20), 10, 0.8, 0.4, 3, 0.5);
+    s.step();
+  }
+  return hashFields(s.u, s.v, s.pressure, ...s.dye);
+}
