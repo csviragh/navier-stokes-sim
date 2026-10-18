@@ -635,6 +635,79 @@ Reproduce with `node /tmp/delay-sweep.js --out /tmp/sweep-lag --jobs 8 --mode la
 `python3 scripts/plot-delay-sweep.py /tmp/sweep-lag` and
 `python3 scripts/plot-delay-compare.py docs/sweeps /tmp/sweep-lag /tmp/sweep-lag`.
 
+#### Rerun with undelayed viscosity ν = 0.01 (Eulerian, grid-independent)
+
+Same Eulerian (fixed-point) delay as the first sweep, but with a small
+**undelayed** local viscosity ν = 0.01 that damps the Doppler-driven short
+waves. Everything else matches the ν = 0 sweep: Cucker–Smale only (S = 2/s,
+R = 0.05, β = 1), self-propulsion τ = 1 s, v₀ = 0.5, delays on the kernel only
+(`delayLocal = false`), t_self = t_nb = t from 0 to 2 s, 120 s per run, seeds
+1000 / 1017 / 1034. The viscosity is *not* delayed: a delayed ν∇² has its own
+grid-scale instability (see *Stability analysis* above), which would defeat the
+regularisation.
+
+- **Why ν = 0.01.** Modes with ν k² ≥ S never grow under the Doppler equation
+  μ + ν k_h² + sin²α/τ = −S(1 − K̂) e^{−μt} e^{i k·U t}, so the physical cutoff
+  is k_c = √(S/ν) = 14.1 (λ_c ≈ 0.44 of the box height). On both grids
+  k_c ≪ π/h (0.062 × and 0.035 × the Nyquist wavenumber), and ν is ≥ 7× the
+  semi-Lagrangian numerical viscosity. Theory then predicts the same onset on
+  both grids: **0.43–0.50 s** (0.46–0.52 with SL damping on 128 × 72,
+  0.44–0.51 on 219 × 128). See `scripts/delay-sweep-theory-visc.py` →
+  `docs/sweeps/visc/theory_visc.json`.
+- **Runs.** 128 × 72: 41 delays × 3 seeds = 123 runs (~12 CPU-h). 219 × 128:
+  21 delays (step 0.1 s) × 3 seeds = 63 runs (~20 CPU-h). Implicit viscosity
+  uses 40 Gauss–Seidel iterations (20 left ~3 % of ν under-applied on the fine
+  grid). Data and figures are in `docs/sweeps/visc/`.
+
+![P(cos θ_ij) vs delay, ν = 0.01, 128 × 72 (log colour)](docs/sweeps/visc/heatmap_log_128x72.png)
+
+![P(cos θ_ij) vs delay, ν = 0.01, 219 × 128 (log colour)](docs/sweeps/visc/heatmap_log_219x128.png)
+
+![⟨cos θ_ij⟩ vs delay on both grids, ν = 0.01](docs/sweeps/visc/meancos_vs_delay.png)
+
+Steady-state ⟨cos θ_ij⟩ (60–120 s), mean ± seed std:
+
+| t (s) | 0–0.45 | 0.50 | 0.60 | 0.70 | 0.80 | 1.0 | 1.2 | 1.5 | 1.8 | 2.0 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 128 × 72 (3 seeds) | 1.000 | 0.987 ± 0.022 | 0.771 ± 0.087 | 0.493 ± 0.005 | 0.428 ± 0.040 | 0.417 ± 0.150 | 0.176 ± 0.004 | 0.102 ± 0.010 | 0.318 ± 0.159 | 0.398 ± 0.526 |
+| 219 × 128 (3 seeds) | 1.000 (t ≤ 0.4) | 0.946 ± 0.093 | 0.738 ± 0.118 | 0.500 ± 0.044 | 0.470 ± 0.107 | 0.479 ± 0.146 | 0.240 ± 0.044 | 0.215 ± 0.157 | 0.213 ± 0.012 | 0.130 ± 0.111 |
+
+**Findings.**
+
+- **Onset is grid-independent and matches theory.** Perfect order (⟨cos⟩ = 1.000
+  in every seed) holds through t = 0.45 s on 128 × 72 and through t = 0.40 s on
+  219 × 128. At t = 0.50 s both grids start to lose order (0.987 / 0.946), and by
+  t = 0.60–0.70 s they agree to a few hundredths (0.77 / 0.74, then 0.49 / 0.50).
+  That sits inside the predicted window 0.43–0.50 s. Contrast the ν = 0 Eulerian
+  sweep above, where onset was 0.15 s on the coarse grid and ~0.05 s on the fine
+  one.
+- **Partial-order plateau, then a drop.** Between t ≈ 0.7 and 1.1 s both grids
+  sit at ⟨cos⟩ ≈ 0.4–0.5 (a partly ordered state with large seed spread). Around
+  t = 1.1–1.2 s the order falls further, to ~0.1–0.2, and stays low out to 2 s
+  on the fine grid.
+- **No robust re-entrance at large delay.** On 128 × 72, seed 1000 alone snaps
+  back to a near-perfect flock at t ≥ 1.85 s (⟨cos⟩ ≈ 0.99–1.00), which is what
+  the interim plot showed. Seeds 1017 and 1034 stay disordered (≈ 0.01–0.24) at
+  the same delays, so the mean ± seed std balloons and the recovery is
+  **not** reproducible across seeds. On 219 × 128 no seed reorders: every run
+  at t ≥ 1.8 s has ⟨cos⟩ ≤ 0.28. Treat the coarse-grid recovery as a
+  finite-size / single-seed fluctuation, not a physical re-entrance.
+- **Caveats.** ν is a modelling choice that sets the shortest physical length;
+  smaller ν would push the onset earlier and restore some grid dependence
+  (see the scan in `docs/sweeps/visc/theory_visc.json`). The viscosity itself
+  is undelayed. The analysis is of the steady window 60–120 s; a few long-delay
+  runs still wander within that window (large `meanCos_steady_timestd`).
+
+Reproduce:
+
+```bash
+npx esbuild scripts/delay-sweep.ts --bundle --platform=node --outfile=/tmp/delay-sweep.js
+node /tmp/delay-sweep.js --out /tmp/sweep-visc-c128 --jobs 3 --nx 128 --ny 72 --nu 0.01 --iters 40
+node /tmp/delay-sweep.js --out /tmp/sweep-visc-f219 --jobs 5 --nx 219 --ny 128 --dstep 0.1 --nu 0.01 --iters 40
+python3 scripts/delay-sweep-theory-visc.py   # → theory_visc.json
+python3 scripts/plot-delay-sweep-visc.py /tmp/sweep-visc-c128 /tmp/sweep-visc-f219 docs/sweeps theory_visc.json /tmp/figs
+```
+
 Files in `docs/sweeps/`:
 
 - `summary.csv`: per run.

@@ -98,7 +98,7 @@ for d in (c128, f219):
     axs[0].set_ylabel(r'pairwise alignment $\cos\theta_{ij} = \hat v_i\cdot\hat v_j$')
     cb = fig.colorbar(m, cax=fig.add_axes([0.915, 0.2, 0.015, 0.66])); cb.set_label(r'$P(\cos\theta_{ij})$ (log)')
     fig.suptitle(f'Distribution of pairwise velocity correlations vs delay, ν = {NU:g}, {th["nx"]}×{th["ny"]}', fontsize=11)
-    ns = f'{nseed[1]} seeds' if nseed[0] == nseed[1] else f'{nseed[0]}–{nseed[1]} seeds (partial)'
+    ns = (f'{nseed[1]} seed' + ('s' if nseed[1] > 1 else '')) if nseed[0] == nseed[1] else f'{nseed[0]}–{nseed[1]} seeds (partial)'
     fig.text(0.5, 0.02, caption(th, f'; {ns} × {th["tmax"]:.0f} s'), ha='center', fontsize=7.5, color='0.3')
     for ext in ('png', 'pdf'): fig.savefig(os.path.join(out, f'heatmap_log_{key}.{ext}'), dpi=200)
     plt.close(fig)
@@ -127,7 +127,7 @@ for key, c, mk, ls in (('128x72', '#1f77b4', 's', '-'), ('219x128', '#d62728', '
     th, rr, agg = results[key]
     x = np.array([a['delay'] for a in agg]); y = np.array([a['steady'] for a in agg]); e = np.array([a['steady_sd'] for a in agg])
     n = (min(a['n'] for a in agg), max(a['n'] for a in agg))
-    nl = f'{n[1]} seeds' if n[0] == n[1] else f'{n[0]}–{n[1]} seeds, partial'
+    nl = (f'{n[1]} seed' + ('s' if n[1] > 1 else '')) if n[0] == n[1] else f'{n[0]}–{n[1]} seeds, partial'
     ax.errorbar(x, y, yerr=e, fmt=mk + ls, color=c, ms=4 if key == '128x72' else 6, mfc=c if key == '128x72' else 'none', mew=1.3,
                 lw=1.2, capsize=2, label=f'ν = {NU:g}, {key.replace("x", "×")} ({nl}; bars: seed std)')
 ax.set_xlabel(r'delay $t_{\mathrm{self}} = t_{\mathrm{nb}} = t$ (s)')
