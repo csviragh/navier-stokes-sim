@@ -35,6 +35,13 @@ function solverParams(s: Settings): Partial<FluidParams> {
     selfPropulsion: s.selfPropulsion,
     selfPropTau: s.selfPropTau,
     selfPropV0: s.selfPropV0,
+    kernel: s.kernel,
+    kernelStrength: s.kernelStrength,
+    kernelRange: s.kernelRange,
+    kernelBeta: s.kernelBeta,
+    kernelAlpha: s.kernelAlpha,
+    kernelS: s.kernelS,
+    kernelMT: s.kernelMT,
   };
 }
 
@@ -136,6 +143,22 @@ const controls = bindControls(settings, {
     // which it amplifies until the local speed approaches v₀. Periodic
     // boundaries (no walls to brake the flow) let |u| reach ≈ v₀ everywhere.
     // The global default boundary stays no-slip; the user can switch back.
+    settings.selfPropulsion = true;
+    settings.walls = 'periodic';
+    settings.paused = false;
+    solver.setParams(solverParams(settings));
+    solver.reset();
+    solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05 * Math.max(settings.selfPropV0, 0.1) / 0.5);
+    renderer.resetScales();
+  },
+  onFlocking() {
+    // Quick start: Cucker–Smale alignment + self-propulsion on a torus.
+    settings.kernel = 'cucker-smale';
+    settings.kernelStrength = 3;
+    settings.kernelRange = 0.05;
+    settings.kernelBeta = 1;
+    // vorticity confinement amplifies grid-scale noise once the flow is ordered
+    settings.vorticity = 0;
     settings.selfPropulsion = true;
     settings.walls = 'periodic';
     settings.paused = false;

@@ -9,7 +9,9 @@
  *
  * One time step (operator splitting):
  *   1. forces (vorticity confinement; user impulses are applied via splat())
- *   2. implicit viscous diffusion
+ *   2. implicit viscous diffusion, then the optional nonlocal (long-range)
+ *      viscosity / alignment kernel S∫K(|x−y|)(u(y)−u(x))dy or −ν_s(−Δ)^s u
+ *      (see kernels.ts)
  *   3. projection (Poisson solve for p, subtract ∇p)
  *   4. semi-Lagrangian self-advection (RK2 back-trace, bilinear interpolation)
  *   5. optional self-propulsion (active fluid): exact relaxation of the local
@@ -29,6 +31,7 @@ import {
   selfPropulsion, setScalarBoundary, setUBoundary, setVBoundary, uLastI, vLastJ,
   vorticityConfinement,
 } from './ops';
+import { NonlocalOperator, type KernelParams, type KernelType } from './kernels';
 
 export interface FluidParams {
   /** Kinematic viscosity ν (domain units² / s; the shorter side has length 1). */
@@ -59,6 +62,20 @@ export interface FluidParams {
   selfPropTau: number;
   /** Target speed v₀ of the self-propulsion term (domain units / s). */
   selfPropV0: number;
+  /** Long-range viscosity / alignment kernel added to the local ν∇² ('none' = off). */
+  kernel: KernelType;
+  /** Kernel strength S (1/s); for 'fractional' it is ν_s (L^{2s}/s). */
+  kernelStrength: number;
+  /** Kernel range / softening length R (domain units). */
+  kernelRange: number;
+  /** Cucker–Smale exponent β. */
+  kernelBeta: number;
+  /** Power-law exponent α. */
+  kernelAlpha: number;
+  /** Fractional order s ∈ (0, 1]. */
+  kernelS: number;
+  /** Motsch–Tadmor local normalisation (only differs from the default next to walls). */
+  kernelMT: boolean;
 }
 
 export const defaultParams: FluidParams = {
@@ -73,6 +90,13 @@ export const defaultParams: FluidParams = {
   selfPropulsion: false,
   selfPropTau: 0.5,
   selfPropV0: 0.5,
+  kernel: 'none',
+  kernelStrength: 2,
+  kernelRange: 0.05,
+  kernelBeta: 1,
+  kernelAlpha: 3,
+  kernelS: 0.5,
+  kernelMT: false,
 };
 
 export type RGB = readonly [number, number, number];
@@ -101,6 +125,8 @@ export class FluidSolver {
   private readonly scratch: {
     uc: Float32Array; vc: Float32Array; curl: Float32Array; fx: Float32Array; fy: Float32Array;
   };
+
+  private nl?: { key: string; u: NonlocalOperator; v: NonlocalOperator };
 
   /** Simulated time (s) and step counter. */
   time = 0;
@@ -353,6 +379,43 @@ export class FluidSolver {
     this.steps = src.steps;
   }
 
+  /** Build (or reuse) the spectral operators for the current kernel / grid / boundaries. */
+  kernelOperators(): { u: NonlocalOperator; v: NonlocalOperator } {
+    const p = this.params;
+    const kp: KernelParams = {
+      kernel: p.kernel, strength: p.kernelStrength, range: p.kernelRange, beta: p.kernelBeta,
+      alpha: p.kernelAlpha, s: p.kernelS, motschTadmor: p.kernelMT,
+    };
+    // strength only enters at apply time; everything else determines the symbol
+    const key = JSON.stringify([kp.kernel, kp.range, kp.beta, kp.alpha, kp.s, p.walls]);
+    if (!this.nl || this.nl.key !== key) {
+      const g = this.grid;
+      const px = periodicX(p.walls);
+      const py = periodicY(p.walls);
+      this.nl = {
+        key,
+        u: new NonlocalOperator(px ? g.nx : g.nx - 1, g.ny, px, py, g.h, kp),
+        v: new NonlocalOperator(g.nx, py ? g.ny : g.ny - 1, px, py, g.h, kp),
+      };
+    }
+    this.nl.u.params.strength = kp.strength;
+    this.nl.u.params.motschTadmor = kp.motschTadmor;
+    // u and v share one params object
+    return this.nl;
+  }
+
+  /** Apply the nonlocal viscosity / alignment term over one time step. */
+  private applyKernel(): void {
+    const g = this.grid;
+    const { u, v } = this;
+    const { dt, walls } = this.params;
+    const ops = this.kernelOperators();
+    ops.u.apply((i, j) => u[uIdx(g, i + 1, j + 1)], (i, j, x) => { u[uIdx(g, i + 1, j + 1)] = x; }, dt);
+    ops.v.apply((i, j) => v[vIdx(g, i + 1, j + 1)], (i, j, x) => { v[vIdx(g, i + 1, j + 1)] = x; }, dt);
+    setUBoundary(g, u, walls);
+    setVBoundary(g, v, walls);
+  }
+
   /** Advance the simulation by one time step of length params.dt. */
   step(): void {
     const g = this.grid;
@@ -374,6 +437,9 @@ export class FluidSolver {
       diffuseU(g, u, u0, viscosity, dt, iterations, walls);
       diffuseV(g, v, v0, viscosity, dt, iterations, walls);
     }
+
+    // 2b. nonlocal (long-range) viscosity / alignment
+    if (this.params.kernel !== 'none') this.applyKernel();
 
     // 3. projection
     project(g, u, v, pressure, tmp, dt, iterations, walls, sor);

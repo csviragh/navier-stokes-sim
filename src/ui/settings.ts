@@ -1,4 +1,4 @@
-import type { WallType } from '../solver';
+import type { KernelType, WallType } from '../solver';
 import type { ViewMode } from '../render/renderer';
 
 /** All user-adjustable settings of the app. */
@@ -14,6 +14,15 @@ export interface Settings {
   selfPropTau: number;
   /** Target speed v₀ (domain units / s; the shorter side has length 1). */
   selfPropV0: number;
+  /** Long-range viscosity / alignment kernel (added to the local ν∇²). */
+  kernel: KernelType;
+  /** Kernel strength S (1/s); ν_s for the fractional Laplacian. */
+  kernelStrength: number;
+  kernelRange: number;
+  kernelBeta: number;
+  kernelAlpha: number;
+  kernelS: number;
+  kernelMT: boolean;
   dt: number;
   iterations: number;
   /** Number of cells along the shorter side of the window. */
@@ -36,6 +45,13 @@ export const defaultSettings: Settings = {
   selfPropulsion: false,
   selfPropTau: 0.5,
   selfPropV0: 0.5,
+  kernel: 'none',
+  kernelStrength: 2,
+  kernelRange: 0.05,
+  kernelBeta: 1,
+  kernelAlpha: 3,
+  kernelS: 0.5,
+  kernelMT: false,
   dt: 1 / 60,
   iterations: 20,
   resolution: 128,

@@ -102,6 +102,79 @@ and optionally diffuses (κ) and fades:
 ∂c/∂t + (u·∇)c = κ∇²c
 ```
 
+### Long-range viscosity / alignment kernels
+
+The local viscous term ν∇²u only couples neighbouring points. The
+**Long-range viscosity / alignment** section adds an optional *nonlocal* term
+**on top of** the local ν∇²u (the ν slider is unchanged; kernel *None* is the
+default and leaves the solver bit-identical to before):
+
+```
+f_K(x) = S ∫ K(|x − y|) (u(y) − u(x)) dy          (convolution kernels, ∫K dA = 1)
+f_s    = −ν_s (−Δ)^s u                            (fractional Laplacian, 0 < s ≤ 1)
+```
+
+| Kernel | K(r) before normalisation | Parameters |
+|---|---|---|
+| Gaussian | exp(−r²/(2R²)) | S, R |
+| Cucker–Smale flocking | (1 + r²/R²)^(−β) | S, R, β (optional Motsch–Tadmor normalisation) |
+| Power law | (r² + R²)^(−α/2) (R = softening length) | S, R, α |
+| Fractional Laplacian | Fourier symbol ν_s λ(k)^s, λ = discrete −Δ symbol | ν_s, s |
+
+**Normalisation.** Every convolution kernel is normalised so that ∫K dA = 1
+(discretely Σ K h² = 1 over every offset that fits in the domain). S is then a
+**rate** (1/s): each point relaxes toward its K-weighted neighbourhood average
+velocity at rate S. For a Gaussian with small R, `S∫K(u(y) − u(x))dy ≈ S(R²/2)∇²u`,
+so it is ordinary viscosity with ν_eff = S R²/2 (checked by a test). The
+fractional strength ν_s has units L^{2s}/s, and s = 1 gives exactly the local
+viscous decay rate νλ(k).
+
+**Motsch–Tadmor** (checkbox): divide by the local kernel mass
+c(x) = ∫_domain K(|x − y|) dy instead of ∫K = 1. With a uniform density, this
+only makes a difference next to walls, where part of the kernel lies outside
+the domain. On periodic grids it does nothing.
+
+**How it is computed** (each velocity component on its own staggered sub-grid:
+u on u-faces, v on v-faces, unknown faces only; the projection afterwards
+restores ∇·u = 0). This is step 2b, right after local diffusion:
+
+- *Fully periodic:* 2D FFT of exactly the grid size (radix-2 or Bluestein for
+  any length), with minimum-image distances. The operator is diagonal:
+  λ(k) = S(K̂(k) − K̂(0)) ≤ 0, applied **exactly** as û ← û·e^{λΔt}. The fractional
+  term uses û ← û·e^{−ν_s λ(k)^s Δt}. Momentum is conserved exactly (λ(0) = 0) and
+  kinetic energy can never increase.
+- *Walls on at least one axis* (no-slip, free-slip, periodic-x channel): the
+  walled axes are zero-padded to a power of two ≥ 2n − 1, so the convolution is
+  **linear and never wraps across a wall**. The integral runs over the domain
+  only: `f = S[(K*u)(x) − c(x)u(x)]` with c = K * 1_domain. Integration is
+  semi-implicit, `u ← (u + SΔt (K*u)) / (1 + SΔt c)`: the convolution is
+  explicit and the local part implicit. The result is a convex combination of
+  old values, so it obeys a max principle and is stable for any Δt. Walls are
+  not treated as zero-velocity neighbours; the kernel only aligns fluid with
+  fluid.
+- *Fractional on walled domains* is **not implemented**. It is inactive there,
+  and the panel says so.
+
+Kernel transforms are precomputed and cached. They are rebuilt only when the
+kernel, R, β, α, s, boundaries, or grid change.
+
+**With self-propulsion**, the kernel turns active turbulence into a
+**flock**. Self-propulsion fixes the speed |u| ≈ v₀, and the alignment kernel
+makes the directions agree over distance R. This is a continuum
+Toner–Tu / Cucker–Smale-like active fluid. On a torus with Cucker–Smale
+(S = 3/s, R = 0.05, β = 1), weak random swirls order into a global flow with
+mean velocity ≈ v₀ within a few seconds. Try **🐦 Flocking quick start** (`F`).
+
+References: F. Cucker & S. Smale, "Emergent behavior in flocks", *IEEE Trans.
+Automatic Control* 52 (2007) 852–862; S. Motsch & E. Tadmor, "A new model for
+self-organized dynamics and its flocking behavior", *J. Stat. Phys.* 144 (2011)
+923–947; J. Toner & Y. Tu, *PRL* 75 (1995) 4326; M. Kwaśnicki, "Ten equivalent
+definitions of the fractional Laplace operator", *Fract. Calc. Appl. Anal.* 20
+(2017); and on alignment with nonlocal viscosity, E. Tadmor & C. Tan, *Phil.
+Trans. R. Soc. A* 372 (2014).
+
+![Cucker–Smale alignment + self-propulsion on a torus (vorticity + arrows)](docs/kernels-flocking.png)
+
 ## Numerical method
 
 The solver follows Jos Stam's **Stable Fluids** (SIGGRAPH 1999; "Real-Time Fluid
@@ -128,6 +201,9 @@ Dynamics for Games", GDC 2003) with operator splitting. Each time step Δt runs:
 5. **Self-propulsion** (optional): exact relaxation of the local speed toward v₀,
    `|u| ← v₀ + (|u| − v₀) e^(−Δt/τ)` along u/|u| (see above).
 6. **Projection** again.
+
+   (Step 2b, between local diffusion and the first projection, applies the
+   optional long-range kernel; see above.)
 7. **Dye:** implicit diffusion, semi-Lagrangian advection, and optional
    exponential fade.
 
@@ -204,11 +280,19 @@ a little (∝ amplitude²). A uniform flow and a uniform dye stay exactly unifor
   (0.05–5 s, default 0.5 s), v₀ (0–2, default 0.5), and an *Active turbulence
   quick start* button that switches the term on, selects periodic boundaries,
   and seeds random weak flow.
+- **Long-range viscosity / alignment** section: kernel (None, Gaussian,
+  Cucker–Smale, power law, fractional; default None), strength (log slider,
+  default S = 2/s), range R (0.005–0.3, default 0.05), β (default 1), α
+  (default 3), s (default 0.5), Motsch–Tadmor checkbox, a live plot of K(r)
+  (or of the fractional multiplier), and a *Flocking quick start* button that
+  selects Cucker–Smale, self-propulsion, periodic boundaries, and turns off
+  vorticity confinement.
 - FPS, grid size, and solver time per step are shown in the HUD. A short
   explanation of the equations is built into the panel.
 - **Keyboard:** `Space` pause, `S` step, `R` reset, `V` cycle view, `A` toggle
   arrows, `B` cycle boundaries, `P` toggle self-propulsion, `T`
-  active-turbulence quick start, `H` hide the panel.
+  active-turbulence quick start, `K` cycle kernel, `F` flocking quick start,
+  `H` hide the panel.
 
 ![Active turbulence with the self-propulsion term](docs/selfprop.png)
 
@@ -238,6 +322,7 @@ src/
                      #   self-propulsion (active fluid)
     poisson.ts       #   direct periodic pressure solver (FFT + tridiagonal)
     fft.ts           #   radix-2 / Bluestein FFT for any length
+    kernels.ts       #   nonlocal viscosity / alignment kernels (spectral)
     fluid.ts         #   FluidSolver: state + time stepping, splat/stir input
     index.ts
   render/
@@ -253,6 +338,7 @@ tests/
   solver.test.ts     # Vitest unit tests for the solver
   selfprop.test.ts   # tests for the self-propulsion term
   periodic.test.ts   # tests for the periodic boundaries
+  kernels.test.ts    # tests for the long-range viscosity / alignment kernels
   fingerprint.ts     # bit-exact fingerprint of a scripted wall-mode run
 index.html           # page layout, control panel, equations panel
 .github/workflows/
@@ -287,6 +373,16 @@ sim.updateDiagnostics(); // fills uc, vc, divergence, vorticity
 - a zero field stays exactly zero;
 - walls don't leak dye, viscosity dissipates energy, and the stir, reset, and
   resample helpers behave correctly.
+
+`tests/kernels.test.ts` checks the nonlocal kernels. On periodic grids every
+kernel conserves momentum, never increases energy, and leaves uniform flow
+unchanged. A single Fourier mode decays at exactly S(K̂(0) − K̂(k)) for Gaussian
+and Cucker–Smale, and the Gaussian matches its analytic transform. A small-R
+Gaussian matches ν_eff = S R²/2. Fractional s = 1 reproduces the local viscous
+rate, and s < 1 flattens the spectrum. The walled convolution doesn't wrap
+across walls and obeys a max principle. Long runs with kernels, self-propulsion,
+and stirring stay finite on all boundary types. With kernel None, all four
+boundary types are bit-identical to commit 22fd8ba.
 
 `tests/selfprop.test.ts` checks the self-propulsion term:
 
@@ -343,6 +439,12 @@ Vite is configured with `base: './'`, so the build works under
   partly compensates for this.
 - Gauss–Seidel/SOR converges slowly for large grids. With few iterations a
   small residual divergence remains (visible in the *divergence* view).
+- Long-range kernels cost roughly 15 ms per step at 219 × 128 on the slow
+  development CPU (about 32 ms per step in total on a torus, 44 ms with
+  no-slip walls). The FFTs run on the CPU.
+- The fractional Laplacian only works on fully periodic boundaries.
+- Vorticity confinement amplifies grid-scale noise in a strongly ordered
+  (flocking) flow, so the flocking quick start switches it off.
 - Vorticity confinement is integrated explicitly, so εΔt is clamped to 0.2 for
   stability.
 

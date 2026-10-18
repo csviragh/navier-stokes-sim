@@ -3,6 +3,7 @@
  * the onChange callback with the name of the changed key.
  */
 import { VIEW_MODES, type ViewMode } from '../render/renderer';
+import { KERNEL_TYPES, kernelProfile } from '../solver';
 import { WALL_TYPES } from '../solver';
 import type { Settings } from './settings';
 
@@ -14,6 +15,8 @@ export interface ControlCallbacks {
   onReset(): void;
   /** Quick start: enable self-propulsion, switch to periodic boundaries and seed weak random flow. */
   onActiveTurbulence(): void;
+  /** Quick start: Cucker–Smale alignment + self-propulsion on periodic boundaries. */
+  onFlocking(): void;
 }
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -24,7 +27,7 @@ const $ = <T extends HTMLElement>(id: string): T => {
 
 /** Log-scale slider: slider value is log10(x); the minimum position means 0. */
 function logSlider(
-  id: string, key: 'viscosity' | 'diffusion', s: Settings, cb: ControlCallbacks,
+  id: string, key: 'viscosity' | 'diffusion' | 'kernelStrength', s: Settings, cb: ControlCallbacks,
 ): () => void {
   const input = $<HTMLInputElement>(id);
   const out = $<HTMLOutputElement>(`${id}-out`);
@@ -47,7 +50,7 @@ function logSlider(
 function linSlider(
   id: string,
   key: 'vorticity' | 'dyeDissipation' | 'dt' | 'iterations' | 'resolution' | 'radius' | 'force'
-    | 'selfPropTau' | 'selfPropV0',
+    | 'selfPropTau' | 'selfPropV0' | 'kernelRange' | 'kernelBeta' | 'kernelAlpha' | 'kernelS',
   s: Settings, cb: ControlCallbacks, format: (x: number) => string,
   event: 'input' | 'change' = 'input',
 ): () => void {
@@ -83,6 +86,29 @@ export function bindControls(s: Settings, cb: ControlCallbacks): { sync(): void 
   syncs.push(linSlider('force', 'force', s, cb, (x) => x.toFixed(1)));
   syncs.push(linSlider('sp-tau', 'selfPropTau', s, cb, (x) => x.toFixed(2)));
   syncs.push(linSlider('sp-v0', 'selfPropV0', s, cb, (x) => x.toFixed(2)));
+
+  syncs.push(logSlider('k-strength', 'kernelStrength', s, cb));
+  syncs.push(linSlider('k-range', 'kernelRange', s, cb, (x) => x.toFixed(3)));
+  syncs.push(linSlider('k-beta', 'kernelBeta', s, cb, (x) => x.toFixed(2)));
+  syncs.push(linSlider('k-alpha', 'kernelAlpha', s, cb, (x) => x.toFixed(2)));
+  syncs.push(linSlider('k-s', 'kernelS', s, cb, (x) => x.toFixed(2)));
+  const kernel = $<HTMLSelectElement>('kernel');
+  kernel.addEventListener('change', () => {
+    s.kernel = kernel.value as Settings['kernel'];
+    sync();
+    cb.onChange('kernel', s);
+  });
+  const kernelMT = $<HTMLInputElement>('k-mt');
+  kernelMT.addEventListener('change', () => {
+    s.kernelMT = kernelMT.checked;
+    cb.onChange('kernelMT', s);
+  });
+  for (const id of ['k-strength', 'k-range', 'k-beta', 'k-alpha', 'k-s'])
+    $<HTMLInputElement>(id).addEventListener('input', () => drawKernel(s));
+  $<HTMLButtonElement>('flocking').addEventListener('click', () => {
+    cb.onFlocking();
+    sync();
+  });
 
   const selfProp = $<HTMLInputElement>('selfprop');
   selfProp.addEventListener('change', () => {
@@ -150,6 +176,9 @@ export function bindControls(s: Settings, cb: ControlCallbacks): { sync(): void 
     color.value = s.color;
     rainbow.checked = s.rainbow;
     selfProp.checked = s.selfPropulsion;
+    kernel.value = s.kernel;
+    kernelMT.checked = s.kernelMT;
+    updateKernelUI(s);
     play.textContent = s.paused ? '▶ Play' : '⏸ Pause';
   }
   sync();
@@ -199,8 +228,78 @@ export function bindControls(s: Settings, cb: ControlCallbacks): { sync(): void 
         cb.onActiveTurbulence();
         sync();
         break;
+      case 'k':
+        s.kernel = KERNEL_TYPES[(KERNEL_TYPES.indexOf(s.kernel) + 1) % KERNEL_TYPES.length];
+        sync();
+        cb.onChange('kernel', s);
+        break;
+      case 'f':
+        cb.onFlocking();
+        sync();
+        break;
     }
   });
 
   return { sync };
+}
+
+/** Show only the sliders relevant to the selected kernel and redraw the plot. */
+function updateKernelUI(s: Settings): void {
+  const k = s.kernel;
+  const show = (id: string, on: boolean) => { $<HTMLElement>(id).hidden = !on; };
+  const conv = k === 'gaussian' || k === 'cucker-smale' || k === 'power';
+  show('k-strength-row', k !== 'none');
+  show('k-range-row', conv);
+  show('k-beta-row', k === 'cucker-smale');
+  show('k-alpha-row', k === 'power');
+  show('k-s-row', k === 'fractional');
+  show('k-mt-row', conv);
+  show('k-plot', k !== 'none');
+  $<HTMLElement>('k-strength-label').textContent = k === 'fractional' ? 'Strength ν_s (L^{2s}/s)' : 'Strength S (1/s)';
+  const note = $<HTMLElement>('k-note');
+  note.textContent = k === 'fractional' && s.walls !== 'periodic'
+    ? '⚠ The fractional Laplacian is only implemented on fully periodic boundaries; it is inactive with walls.'
+    : '';
+  drawKernel(s);
+}
+
+/** Plot K(r) normalised to K(0) = 1 for r ∈ [0, 0.5] (or the multiplier |k|^{2s} for fractional). */
+function drawKernel(s: Settings): void {
+  const cv = $<HTMLCanvasElement>('k-plot');
+  const ctx = cv.getContext('2d');
+  if (!ctx) return;
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+  const p = {
+    kernel: s.kernel,
+    range: Number(($<HTMLInputElement>('k-range')).value) || s.kernelRange,
+    beta: Number(($<HTMLInputElement>('k-beta')).value) || s.kernelBeta,
+    alpha: Number(($<HTMLInputElement>('k-alpha')).value) || s.kernelAlpha,
+  };
+  const sFrac = Number(($<HTMLInputElement>('k-s')).value) || s.kernelS;
+  const pad = 4;
+  ctx.beginPath();
+  ctx.strokeStyle = '#3fa9ff';
+  ctx.lineWidth = 1.5;
+  for (let x = 0; x <= W - 2 * pad; x++) {
+    const t = x / (W - 2 * pad);
+    let y: number;
+    if (s.kernel === 'fractional') y = t ** (2 * sFrac); // multiplier vs |k|/k_max
+    else y = kernelProfile(p, 0.5 * t) / kernelProfile(p, 0);
+    const px = pad + x, py = H - pad - y * (H - 2 * pad);
+    if (x === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.fillText(s.kernel === 'fractional' ? '|k|^2s / |k|max^2s  vs |k|' : 'K(r)/K(0),  r = 0 … 0.5', pad + 2, 12);
+  if (s.kernel !== 'fractional') {
+    // mark R
+    const xr = pad + (p.range / 0.5) * (W - 2 * pad);
+    ctx.strokeStyle = 'rgba(255,200,80,0.6)';
+    ctx.beginPath(); ctx.moveTo(xr, pad); ctx.lineTo(xr, H - pad); ctx.stroke();
+    ctx.fillText('R', xr + 2, H - pad - 2);
+  }
 }

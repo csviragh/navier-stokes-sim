@@ -87,6 +87,42 @@
       </section>
 
       <section>
+        <h2>Long-range viscosity / alignment</h2>
+        <label class="row" title="Cycle (K)">Kernel
+          <select id="kernel">
+            <option value="none">None (local ν∇² only)</option>
+            <option value="gaussian">Gaussian</option>
+            <option value="cucker-smale">Cucker–Smale flocking</option>
+            <option value="power">Power law</option>
+            <option value="fractional">Fractional Laplacian</option>
+          </select>
+        </label>
+        <label class="slider" id="k-strength-row"><span id="k-strength-label">Strength S (1/s)</span> <output id="k-strength-out"></output>
+          <input type="range" id="k-strength" min="-5" max="1.5" step="0.05" />
+        </label>
+        <label class="slider" id="k-range-row">Range R <output id="k-range-out"></output>
+          <input type="range" id="k-range" min="0.005" max="0.3" step="0.005" />
+        </label>
+        <label class="slider" id="k-beta-row">Cucker–Smale exponent β <output id="k-beta-out"></output>
+          <input type="range" id="k-beta" min="0.1" max="3" step="0.05" />
+        </label>
+        <label class="slider" id="k-alpha-row">Power-law exponent α <output id="k-alpha-out"></output>
+          <input type="range" id="k-alpha" min="0.5" max="5" step="0.1" />
+        </label>
+        <label class="slider" id="k-s-row">Fractional order s <output id="k-s-out"></output>
+          <input type="range" id="k-s" min="0.05" max="1" step="0.05" />
+        </label>
+        <label class="check" id="k-mt-row" title="Divide by the local kernel mass (only differs next to walls)"><input type="checkbox" id="k-mt" />
+          Motsch–Tadmor normalisation</label>
+        <canvas id="k-plot" width="240" height="80"></canvas>
+        <p class="hint" id="k-note"></p>
+        <button id="flocking" class="wide" title="Cucker–Smale + self-propulsion on periodic boundaries (F)">🐦 Flocking quick start</button>
+        <p class="hint">Adds S∫K(|x−y|)(<b>u</b>(y) − <b>u</b>(x))dy to the local viscosity
+          (∫K = 1, so S is a relaxation rate), or −ν_s(−Δ)<sup>s</sup><b>u</b>. Exact in Fourier
+          space on periodic boundaries; with walls a zero-padded (non-wrapping) convolution.</p>
+      </section>
+
+      <section>
         <h2>Numerics</h2>
         <label class="slider">Time step Δt (s) <output id="dt-out"></output>
           <input type="range" id="dt" min="0.002" max="0.05" step="0.001" />
@@ -135,6 +171,20 @@
           |<b>u</b>|<sub>new</sub> = v₀ + (|<b>u</b>| − v₀)·e<sup>−Δt/τ</sup>, so it is stable
           for any Δt/τ. The projection afterwards keeps ∇·<b>u</b> = 0, so |<b>u</b>| ends up
           close to, but not exactly, v₀ everywhere: the result is "active turbulence".</p>
+        <p><b>Long-range viscosity / alignment</b> (optional): the local viscous term
+          ν∇²<b>u</b> only couples neighbouring points. A nonlocal kernel is added on top:</p>
+        <div class="eq"><b>f</b><sub>K</sub>(x) = S ∫ K(|x − y|) (<b>u</b>(y) − <b>u</b>(x)) dy,  ∫K = 1</div>
+        <p>so each point relaxes toward a K-weighted average of the velocity around it at rate
+          S (a velocity-alignment / flocking interaction). Kernels: <i>Gaussian</i>
+          K ∝ e<sup>−r²/2R²</sup> (for small R this is ordinary viscosity with ν = S R²/2);
+          <i>Cucker–Smale</i> K ∝ (1 + r²/R²)<sup>−β</sup> (Cucker &amp; Smale 2007), with an
+          optional Motsch–Tadmor normalisation (divide by the local kernel mass, which only
+          matters near walls); <i>power law</i> K ∝ (r² + R²)<sup>−α/2</sup>. The
+          <i>fractional Laplacian</i> −ν<sub>s</sub>(−Δ)<sup>s</sup><b>u</b> (0 &lt; s ≤ 1; s = 1 is
+          ordinary viscosity) damps short waves less and long waves relatively more.
+          All of them conserve momentum on periodic boundaries and only ever remove kinetic
+          energy. Combined with self-propulsion they give a Toner–Tu-like active "flock":
+          the fluid moves at ≈ v₀ and the kernel aligns its direction over distance R.</p>
         <p><b>Boundaries</b>: <i>no-slip</i> walls (fluid sticks to the walls, u = 0),
           <i>free-slip</i> walls (no flow through the walls, but it slides along them),
           <i>periodic</i> (a torus: whatever leaves on one side re-enters on the opposite
@@ -154,7 +204,7 @@
           becomes more diffusive).</p>
         <p>Shortcuts: <kbd>Space</kbd> pause, <kbd>S</kbd> step, <kbd>R</kbd> reset,
           <kbd>V</kbd> next view, <kbd>A</kbd> arrows, <kbd>B</kbd> next boundary, <kbd>P</kbd> self-propulsion,
-          <kbd>T</kbd> active-turbulence quick start, <kbd>H</kbd> hide panel.</p>
+          <kbd>T</kbd> active-turbulence quick start, <kbd>K</kbd> next kernel, <kbd>F</kbd> flocking quick start, <kbd>H</kbd> hide panel.</p>
       </details>
     </aside>
 
