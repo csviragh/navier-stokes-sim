@@ -133,8 +133,11 @@ const controls = bindControls(settings, {
   },
   onActiveTurbulence() {
     // Quick start: switch the active term on and start from weak random swirls,
-    // which it amplifies until the local speed approaches v₀.
+    // which it amplifies until the local speed approaches v₀. Periodic
+    // boundaries (no walls to brake the flow) let |u| reach ≈ v₀ everywhere.
+    // The global default boundary stays no-slip; the user can switch back.
     settings.selfPropulsion = true;
+    settings.walls = 'periodic';
     settings.paused = false;
     solver.setParams(solverParams(settings));
     solver.reset();

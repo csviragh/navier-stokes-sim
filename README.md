@@ -3,9 +3,10 @@
 A browser-based simulator for the **2D incompressible Navier–Stokes equations**
 with a real-time visualization frontend. Drag with the mouse (or a finger) to
 stir the fluid and inject coloured dye, and switch between views of the dye,
-velocity, pressure, vorticity, and divergence fields. An optional
-**self-propulsion (active fluid)** term turns it into a model of active
-turbulence.
+velocity, pressure, vorticity, and divergence fields. Boundaries can be solid
+walls (no-slip or free-slip), fully **periodic**, or periodic in x with walls in
+y (a channel). An optional **self-propulsion (active fluid)** term turns it
+into a model of active turbulence.
 
 **Try it live: <https://csviragh.github.io/navier-stokes-sim/>**
 
@@ -83,6 +84,17 @@ compatible with ∇·u = 0 and the walls, |u| does **not** end up exactly v₀
 everywhere. In a 64² box with v₀ = 0.5 and τ = 0.25 s the mean speed settles
 at about 0.43 (≈ 87 % of v₀), with vortices and jets: active turbulence.
 
+With **periodic** boundaries there are no walls to brake the flow. A uniform
+flow is divergence free and periodic, so it is driven to |u| = v₀ *exactly*
+(this is a unit test). Starting from random swirls on the torus (228 × 128,
+v₀ = 0.5, τ = 0.5 s, ε = 2) the mean speed reaches ≈ 0.466 after 20 s (≈ 93 %
+of v₀), versus ≈ 0.454 with no-slip walls and ≈ 0.459 in the periodic-x channel
+under the same settings. The **Active
+turbulence quick start** therefore switches the boundaries to periodic (you can
+switch back at any time).
+
+![Active turbulence on the periodic torus: dye (left) and vorticity (right); structures continue across the edges](docs/periodic.png)
+
 The dye is a passive scalar c (one per RGB channel) that is carried by the flow
 and optionally diffuses (κ) and fades:
 
@@ -104,7 +116,9 @@ Dynamics for Games", GDC 2003) with operator splitting. Each time step Δt runs:
    adapts to how stiff the system is, capped by the *solver iterations* setting.
 3. **Projection.** Solve the pressure Poisson equation `∇²p = (ρ/Δt) ∇·u*` with
    `∂p/∂n = 0` on the walls, using Gauss–Seidel with successive over-relaxation
-   (SOR, ω = 1.7, warm-started from the previous step's pressure). Then set
+   (SOR, ω = 1.7, warm-started from the previous step's pressure). With
+   periodic boundaries it is solved directly with FFTs instead (see
+   *Boundaries*). Then set
    `u = u* − (Δt/ρ) ∇p`. This is the Helmholtz–Hodge decomposition, which keeps
    only the divergence-free part.
 4. **Self-advection**, semi-Lagrangian: trace each velocity sample backward
@@ -126,10 +140,51 @@ domain has length 1. The default grid has **128 cells on the short side**, and
 the long side follows the window's aspect ratio (e.g. 228 × 128 on a 16:9
 window).
 
-**Boundaries.** The domain is a closed box with solid walls. The normal
-velocity on the walls is zero. You can choose the tangential condition:
-**no-slip** (default; velocity on the wall is zero) or **free-slip**. Dye and
-pressure use zero-flux (Neumann) conditions.
+**Boundaries.** Choose them in the *Boundaries* menu (key `B` cycles):
+
+| option | x edges | y edges |
+|---|---|---|
+| **No-slip walls** (default) | solid, u = 0 | solid, u = 0 |
+| **Free-slip walls** | solid, no normal flow, tangential slides | same |
+| **Periodic (torus)** | periodic | periodic |
+| **Periodic in x, walls in y** | periodic | no-slip walls (endless channel) |
+
+At solid walls the normal velocity is zero, and dye and pressure use zero-flux
+(Neumann) conditions. On a **periodic** axis the domain wraps around:
+
+- *Staggered faces.* The u-face at i = 0 and the one at i = nx are the same
+  physical face. Face nx holds the unknown, and face 0 is kept as an exact copy,
+  so nothing is counted twice. Likewise v at j = 0 ≡ j = ny. Ghost cells/rows hold
+  wrapped copies of the opposite edge.
+- *Viscosity and dye diffusion.* The 5-point Gauss–Seidel stencils read their
+  neighbours across the seam directly from the opposite edge.
+- *Pressure.* The Poisson equation uses the periodic Laplacian (every cell has
+  4 neighbours along a periodic axis). It is singular (p is only defined up to a
+  constant), so the mean of the right-hand side is removed (it is zero up to
+  round-off, because the divergence telescopes) and the mean of p is pinned to 0.
+  With a periodic axis the solve is **direct** and exact. An FFT along x
+  diagonalises the Laplacian. For each x-wavenumber the remaining problem in y
+  is a cyclic tridiagonal system on the torus (Thomas + Sherman–Morrison) or a
+  Neumann tridiagonal system in the channel (Thomas). Bluestein's algorithm
+  handles any grid width. So ∇·u is at round-off level after every projection,
+  in every cell including the seam cells, and the *solver iterations* setting
+  only affects the viscosity and dye-diffusion sweeps there. (A wrap-around SOR
+  is kept as a reference. With a fixed sweep origin and only ~20 sweeps its
+  residual piles up next to the seam, which is why it isn't the default.)
+- *Gradient.* The pressure gradient is applied to the seam faces too.
+- *Advection.* Semi-Lagrangian back-traces wrap around instead of being
+  clamped, and the bilinear interpolation reads the wrapped ghosts. This applies
+  to the velocity and the dye.
+- *Self-propulsion, vorticity confinement, diagnostics.* Face-to-face
+  interpolation, |ω| gradients, and the vorticity/divergence/arrow views use the
+  wrapped neighbours. Mouse strokes near an edge continue on the opposite side.
+- Switching the boundary at runtime makes the edge faces walls (zeroed) or seam
+  unknowns as needed, and re-projects the velocity.
+
+With periodic boundaries the total momentum can only change through your
+strokes, since viscosity and projection conserve it to round-off. Semi-Lagrangian
+advection is not exactly conservative, so a strongly stirred field slowly loses
+a little (∝ amplitude²). A uniform flow and a uniform dye stay exactly uniform.
 
 ## Features
 
@@ -142,16 +197,18 @@ pressure use zero-flux (Neumann) conditions.
   auto-scaling and an on-screen legend. A velocity-arrow overlay can be shown
   on top of any view.
 - **Controls:** viscosity, dye diffusion, time step, solver iterations, grid
-  resolution, vorticity strength, dye fade, wall type, dye colour (or rainbow),
+  resolution, vorticity strength, dye fade, boundaries (no-slip, free-slip,
+  periodic, periodic-x channel), dye colour (or rainbow),
   brush radius, force strength, pause/play, single step, and reset.
 - **Self-propulsion (active fluid)** section: on/off toggle (default off), τ
   (0.05–5 s, default 0.5 s), v₀ (0–2, default 0.5), and an *Active turbulence
-  quick start* button that switches the term on and seeds random weak flow.
+  quick start* button that switches the term on, selects periodic boundaries,
+  and seeds random weak flow.
 - FPS, grid size, and solver time per step are shown in the HUD. A short
   explanation of the equations is built into the panel.
 - **Keyboard:** `Space` pause, `S` step, `R` reset, `V` cycle view, `A` toggle
-  arrows, `P` toggle self-propulsion, `T` active-turbulence quick start, `H` hide
-  the panel.
+  arrows, `B` cycle boundaries, `P` toggle self-propulsion, `T`
+  active-turbulence quick start, `H` hide the panel.
 
 ![Active turbulence with the self-propulsion term](docs/selfprop.png)
 
@@ -174,10 +231,13 @@ npm run preview   # serve the production build locally
 ```
 src/
   solver/            # pure numerics, no DOM: unit-testable and portable
-    grid.ts          #   MAC grid layout, indexing, field allocation
+    grid.ts          #   MAC grid layout, indexing, field allocation,
+                     #   boundary types (walls / periodic / periodic-x)
     ops.ts           #   kernels: boundaries, interpolation, diffusion,
                      #   advection, projection, vorticity confinement,
                      #   self-propulsion (active fluid)
+    poisson.ts       #   direct periodic pressure solver (FFT + tridiagonal)
+    fft.ts           #   radix-2 / Bluestein FFT for any length
     fluid.ts         #   FluidSolver: state + time stepping, splat/stir input
     index.ts
   render/
@@ -192,6 +252,8 @@ src/
 tests/
   solver.test.ts     # Vitest unit tests for the solver
   selfprop.test.ts   # tests for the self-propulsion term
+  periodic.test.ts   # tests for the periodic boundaries
+  fingerprint.ts     # bit-exact fingerprint of a scripted wall-mode run
 index.html           # page layout, control panel, equations panel
 .github/workflows/
   ci.yml             # tests + build on push / PR
@@ -237,6 +299,31 @@ sim.updateDiagnostics(); // fills uc, vc, divergence, vorticity
   divergence-free;
 - with the term off, results are bit-identical whatever τ and v₀ are.
 
+`tests/periodic.test.ts` checks the periodic boundaries:
+
+- ghost layers wrap and the seam faces coincide; the channel keeps v = 0 and
+  mirrors u at its walls;
+- a uniform flow stays exactly uniform (all operators on), and an inviscid plug
+  flow persists in the periodic channel;
+- a sine shear wave and a Taylor–Green vortex decay at the analytic rates
+  exp(−νk²t) and exp(−2νk²t), within 1 %;
+- projection and viscosity conserve total momentum to round-off, and a full
+  stirred run keeps it within 5 %;
+- a uniform dye stays exactly uniform, the dye-mass drift stays bounded, and a
+  blob advected through the right edge re-enters on the left, mass conserved;
+- the FFT matches a naive DFT (power-of-two and Bluestein lengths), and the
+  direct periodic pressure solve agrees with a fully converged wrap-around SOR;
+- projection leaves ∇·u ≈ 0 (≤ 10⁻⁵ of the initial value) in every cell,
+  including the seam cells, on the torus and in the channel;
+- a state shifted across the seam evolves into the shifted result (translation
+  invariance, so there are no seam artefacts);
+- with self-propulsion a uniform flow reaches |u| = v₀ exactly (walled: < 95 %),
+  and active turbulence on the torus settles near v₀;
+- stirring across the edges for 400 steps gives no NaNs; switching boundaries
+  at runtime re-projects; strokes at an edge wrap;
+- the no-slip and free-slip runs are **bit-identical** to the version before
+  periodic boundaries were added (hash of a scripted run, `tests/fingerprint.ts`).
+
 ## Deploying to GitHub Pages
 
 `.github/workflows/deploy-pages.yml` builds the app and publishes `dist/` to
@@ -267,12 +354,11 @@ Vite is configured with `base: './'`, so the build works under
   faster, more accurate projection.
 - Higher-order / less diffusive advection: **MacCormack / BFECC**, or a
   **FLIP/PIC** particle-grid hybrid.
-- **Obstacles** you can draw (internal solid boundaries), **inflow/outflow**
-  boundaries (wind tunnel, flow past a cylinder with a Kármán vortex street),
-  and periodic boundaries.
+- **Obstacles** you can draw (internal solid boundaries), and **inflow/outflow**
+  boundaries (wind tunnel, flow past a cylinder with a Kármán vortex street).
 - **Buoyancy** (Boussinesq: temperature/smoke rising) and variable density.
-- Validation cases: lid-driven cavity vs. Ghia et al., decaying Taylor–Green
-  vortex, Poiseuille flow.
+- Validation cases: lid-driven cavity vs. Ghia et al., Poiseuille flow in the
+  periodic channel with a body force (decaying Taylor–Green is already a test).
 - Particle tracers and streamlines; LIC (line-integral convolution) view.
 - **3D** solver (the grid/ops separation is designed to make this a parallel
   module) with volume rendering.

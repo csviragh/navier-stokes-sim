@@ -68,7 +68,38 @@ export const createUField = (g: Grid): Float32Array => new Float32Array(g.uSize)
 export const createVField = (g: Grid): Float32Array => new Float32Array(g.vSize);
 
 /**
- * Wall condition for the velocity component *tangential* to a wall.
- * The normal component is always zero (solid, impermeable walls).
+ * Boundary condition of the rectangular domain.
+ *
+ *  - 'no-slip'    solid walls on all four sides, zero velocity at the walls
+ *  - 'free-slip'  solid walls on all four sides, zero normal velocity only
+ *                 (the tangential component slides freely)
+ *  - 'periodic'   fully periodic (a torus): flow leaving one side re-enters on
+ *                 the opposite side, in both x and y
+ *  - 'periodic-x' periodic in x, no-slip walls at the bottom and top (an
+ *                 infinitely long channel)
+ *
+ * With a periodic axis the faces on the two opposite edges coincide: u-face
+ * i = 0 is the same face as i = nx, and v-face j = 0 the same as j = ny. The
+ * faces i = nx (resp. j = ny) hold the unknowns; i = 0 (j = 0) are kept as
+ * copies, and the ghost layers hold wrapped copies of the opposite edge.
  */
-export type WallType = 'no-slip' | 'free-slip';
+export type WallType = 'no-slip' | 'free-slip' | 'periodic' | 'periodic-x';
+
+/** All boundary options in UI order. */
+export const WALL_TYPES: readonly WallType[] = ['no-slip', 'free-slip', 'periodic', 'periodic-x'];
+
+/** True if the domain wraps around in x. */
+export const periodicX = (w: WallType): boolean => w === 'periodic' || w === 'periodic-x';
+/** True if the domain wraps around in y. */
+export const periodicY = (w: WallType): boolean => w === 'periodic';
+/** True if any axis is periodic. */
+export const isPeriodic = (w: WallType): boolean => periodicX(w) || periodicY(w);
+
+/**
+ * Wrap x into [0, n] (n itself only through round-off, which the bilinear
+ * samplers handle). Fast path for the common case of at most one period off.
+ */
+export const wrap = (x: number, n: number): number =>
+  x >= 0
+    ? x < n ? x : x < 2 * n ? x - n : x - n * Math.floor(x / n)
+    : x >= -n ? x + n : x - n * Math.floor(x / n);

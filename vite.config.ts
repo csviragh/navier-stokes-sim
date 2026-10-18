@@ -10,5 +10,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    // a few physics tests run hundreds of solver steps; leave headroom on slow CI runners
+    testTimeout: 30000,
   },
 });

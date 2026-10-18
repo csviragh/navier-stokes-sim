@@ -58,10 +58,12 @@
         <label class="slider">Dye fade (1/s) <output id="fade-out"></output>
           <input type="range" id="fade" min="0" max="2" step="0.01" />
         </label>
-        <label class="row">Walls
+        <label class="row" title="Cycle boundary conditions (B)">Boundaries
           <select id="walls">
-            <option value="no-slip">No-slip</option>
-            <option value="free-slip">Free-slip</option>
+            <option value="no-slip">No-slip walls</option>
+            <option value="free-slip">Free-slip walls</option>
+            <option value="periodic">Periodic (torus)</option>
+            <option value="periodic-x">Periodic in x, walls in y</option>
           </select>
         </label>
       </section>
@@ -76,10 +78,12 @@
         <label class="slider">Target speed v₀ <output id="sp-v0-out"></output>
           <input type="range" id="sp-v0" min="0" max="2" step="0.05" />
         </label>
-        <button id="active-turb" class="wide" title="Enable the term and seed weak random flow (T)">✨ Active turbulence quick start</button>
+        <button id="active-turb" class="wide" title="Enable the term, switch to periodic boundaries and seed weak random flow (T)">✨ Active turbulence quick start</button>
         <p class="hint">Relaxes the local speed toward v₀ over time τ, keeping the flow direction.
           Speeds are in domain units/s (short side = 1). A fluid at rest has no direction,
-          so stir it or use the quick start.</p>
+          so stir it or use the quick start. The quick start switches to <b>periodic</b>
+          boundaries: without walls the flow can reach |u| ≈ v₀ everywhere (and a uniform
+          flow reaches v₀ exactly).</p>
       </section>
 
       <section>
@@ -131,6 +135,14 @@
           |<b>u</b>|<sub>new</sub> = v₀ + (|<b>u</b>| − v₀)·e<sup>−Δt/τ</sup>, so it is stable
           for any Δt/τ. The projection afterwards keeps ∇·<b>u</b> = 0, so |<b>u</b>| ends up
           close to, but not exactly, v₀ everywhere: the result is "active turbulence".</p>
+        <p><b>Boundaries</b>: <i>no-slip</i> walls (fluid sticks to the walls, u = 0),
+          <i>free-slip</i> walls (no flow through the walls, but it slides along them),
+          <i>periodic</i> (a torus: whatever leaves on one side re-enters on the opposite
+          side, in x and y, so there are no walls at all) and <i>periodic in x, walls in
+          y</i> (an endless channel with no-slip walls at the top and bottom). With periodic
+          boundaries the total momentum has nowhere to go and a uniform flow simply keeps
+          going. The pressure Poisson equation wraps around as well, and is then solved
+          exactly with FFTs, so ∇·<b>u</b> = 0 to round-off.</p>
         <p>The coloured dye c is a passive scalar carried by the flow:</p>
         <div class="eq">∂c/∂t + (<b>u</b>·∇)c = κ∇²c</div>
         <p><b>Method</b> (Stam's "Stable Fluids"): each step adds forces, diffuses
@@ -141,7 +153,7 @@
           Everything is unconditionally stable, so large Δt never explodes (it just
           becomes more diffusive).</p>
         <p>Shortcuts: <kbd>Space</kbd> pause, <kbd>S</kbd> step, <kbd>R</kbd> reset,
-          <kbd>V</kbd> next view, <kbd>A</kbd> arrows, <kbd>P</kbd> self-propulsion,
+          <kbd>V</kbd> next view, <kbd>A</kbd> arrows, <kbd>B</kbd> next boundary, <kbd>P</kbd> self-propulsion,
           <kbd>T</kbd> active-turbulence quick start, <kbd>H</kbd> hide panel.</p>
       </details>
     </aside>

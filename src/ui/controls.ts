@@ -3,6 +3,7 @@
  * the onChange callback with the name of the changed key.
  */
 import { VIEW_MODES, type ViewMode } from '../render/renderer';
+import { WALL_TYPES } from '../solver';
 import type { Settings } from './settings';
 
 type Key = keyof Settings;
@@ -11,7 +12,7 @@ export interface ControlCallbacks {
   onChange(key: Key, settings: Settings): void;
   onStep(): void;
   onReset(): void;
-  /** Quick start: enable self-propulsion and seed weak random flow. */
+  /** Quick start: enable self-propulsion, switch to periodic boundaries and seed weak random flow. */
   onActiveTurbulence(): void;
 }
 
@@ -183,6 +184,12 @@ export function bindControls(s: Settings, cb: ControlCallbacks): { sync(): void 
       case 'h':
         togglePanel();
         break;
+      case 'b': {
+        s.walls = WALL_TYPES[(WALL_TYPES.indexOf(s.walls) + 1) % WALL_TYPES.length];
+        sync();
+        cb.onChange('walls', s);
+        break;
+      }
       case 'p':
         s.selfPropulsion = !s.selfPropulsion;
         sync();

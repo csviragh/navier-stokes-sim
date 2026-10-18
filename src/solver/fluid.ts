@@ -1,6 +1,7 @@
 /**
  * High-level 2D incompressible Navier–Stokes solver ("Stable Fluids",
- * J. Stam 1999) on a staggered MAC grid with solid walls.
+ * J. Stam 1999) on a staggered MAC grid with solid walls (no-slip / free-slip)
+ * or periodic boundaries (fully periodic, or periodic in x with walls in y).
  *
  *   ∂u/∂t + (u·∇)u = −∇p/ρ + ν∇²u + f − (1/τ)(|u| − v₀) u/|u|   (momentum, ρ = 1)
  *   ∇·u = 0                                 (incompressibility)
@@ -19,13 +20,14 @@
  * This module has no DOM dependencies.
  */
 import {
-  createField, createGrid, createUField, createVField, idx, uIdx, vIdx,
-  type Grid, type WallType,
+  createField, createGrid, createUField, createVField, idx, isPeriodic, periodicX, periodicY,
+  uIdx, vIdx, type Grid, type WallType,
 } from './grid';
 import {
   advectScalar, advectVelocity, cellVelocity, computeDivergence, computeVorticity,
   diffuseScalar, diffuseU, diffuseV, project, sampleCell, sampleU, sampleV,
-  selfPropulsion, setScalarBoundary, setUBoundary, setVBoundary, vorticityConfinement,
+  selfPropulsion, setScalarBoundary, setUBoundary, setVBoundary, uLastI, vLastJ,
+  vorticityConfinement,
 } from './ops';
 
 export interface FluidParams {
@@ -43,7 +45,10 @@ export interface FluidParams {
   vorticity: number;
   /** Exponential dye fade rate in 1/s (0 = dye is conserved). */
   dyeDissipation: number;
-  /** Tangential wall condition for velocity. */
+  /**
+   * Boundary condition: solid walls ('no-slip' / 'free-slip'), fully
+   * 'periodic', or 'periodic-x' (periodic in x, no-slip walls in y).
+   */
   walls: WallType;
   /**
    * Enable the self-propulsion (active fluid) term
@@ -122,9 +127,29 @@ export class FluidSolver {
   }
 
   setParams(p: Partial<FluidParams>): void {
+    const before = this.params.walls;
     this.params = { ...this.params, ...p };
-    setUBoundary(this.grid, this.u, this.params.walls);
-    setVBoundary(this.grid, this.v, this.params.walls);
+    const walls = this.params.walls;
+    const g = this.grid;
+    if (walls !== before) {
+      // Switching boundaries: the old edge faces become walls (zeroed) or seam
+      // unknowns; make the ghosts consistent and re-project so ∇·u = 0 under
+      // the new conditions.
+      if (periodicX(before) && !periodicX(walls)) {
+        for (let j = 1; j <= g.ny; j++) this.u[uIdx(g, g.nx, j)] = 0;
+      }
+      if (periodicY(before) && !periodicY(walls)) {
+        for (let i = 1; i <= g.nx; i++) this.v[vIdx(g, i, g.ny)] = 0;
+      }
+      for (const d of this.dye) setScalarBoundary(g, d, walls);
+      setUBoundary(g, this.u, walls);
+      setVBoundary(g, this.v, walls);
+      project(g, this.u, this.v, this.pressure, this.tmp, this.params.dt, 4 * this.params.iterations,
+        walls, this.params.sor);
+      return;
+    }
+    setUBoundary(g, this.u, walls);
+    setVBoundary(g, this.v, walls);
   }
 
   /** Zero every field. */
@@ -143,6 +168,18 @@ export class FluidSolver {
    * radius in cells.
    */
   splat(X: number, Y: number, du: number, dv: number, color: RGB | null, radius: number): void {
+    if (isPeriodic(this.params.walls)) {
+      this.brushPeriodic(X, Y, radius, (cu, cv, cd) => {
+        if (du !== 0) cu((k, w) => { this.u[k] += du * w; });
+        if (dv !== 0) cv((k, w) => { this.v[k] += dv * w; });
+        if (color) cd((k, w) => {
+          this.dye[0][k] += color[0] * w;
+          this.dye[1][k] += color[1] * w;
+          this.dye[2][k] += color[2] * w;
+        });
+      });
+      return;
+    }
     const g = this.grid;
     const r = Math.max(radius, 0.5);
     const inv2r2 = 1 / (2 * r * r);
@@ -185,11 +222,18 @@ export class FluidSolver {
    * `strength` ∈ (0, 1] is the blend factor at the brush centre.
    */
   stir(X: number, Y: number, tu: number, tv: number, radius: number, strength = 1): void {
+    const a = Math.min(Math.max(strength, 0), 1);
+    if (isPeriodic(this.params.walls)) {
+      this.brushPeriodic(X, Y, radius, (cu, cv) => {
+        cu((k, w) => { this.u[k] += a * w * (tu - this.u[k]); });
+        cv((k, w) => { this.v[k] += a * w * (tv - this.v[k]); });
+      });
+      return;
+    }
     const g = this.grid;
     const r = Math.max(radius, 0.5);
     const inv2r2 = 1 / (2 * r * r);
     const reach = Math.ceil(3 * r);
-    const a = Math.min(Math.max(strength, 0), 1);
     for (let j = Math.max(1, Math.floor(Y) - reach); j <= Math.min(g.ny, Math.ceil(Y) + reach); j++)
       for (let i = Math.max(1, Math.floor(X) - reach); i <= Math.min(g.nx - 1, Math.ceil(X) + reach); i++) {
         const dx = i - X;
@@ -209,6 +253,73 @@ export class FluidSolver {
   }
 
   /**
+   * Gaussian brush on a domain with a periodic axis: the brush wraps across
+   * periodic seams (each physical face/cell is visited at most once, with the
+   * weight of its nearest periodic image) and is clipped at walls exactly as
+   * in the solid-wall case. `body` receives three visitors for u-faces,
+   * v-faces and cells; each calls back with (array index, weight).
+   */
+  private brushPeriodic(
+    X: number, Y: number, radius: number,
+    body: (
+      onU: (f: (k: number, w: number) => void) => void,
+      onV: (f: (k: number, w: number) => void) => void,
+      onCell: (f: (k: number, w: number) => void) => void,
+    ) => void,
+  ): void {
+    const g = this.grid;
+    const { nx, ny } = g;
+    const walls = this.params.walls;
+    const px = periodicX(walls);
+    const py = periodicY(walls);
+    const r = Math.max(radius, 0.5);
+    const inv2r2 = 1 / (2 * r * r);
+    const reach = Math.ceil(3 * r);
+    /**
+     * Index window along one axis: list of [storage index, position]. On a
+     * periodic axis positions are unwrapped around the centre, indices are
+     * wrapped into lo..lo+n−1 and at most n entries are produced; on a wall
+     * axis the window is clipped to [lo, hi].
+     */
+    const axis = (c: number, offset: number, n: number, periodic: boolean, lo: number, hi: number) => {
+      const out: [number, number][] = [];
+      const a0 = Math.floor(c) - reach;
+      const a1 = Math.ceil(c) + reach;
+      if (periodic) {
+        for (let m = a0; m <= Math.min(a1, a0 + n - 1); m++) {
+          out.push([lo + ((((m - lo) % n) + n) % n), m + offset]);
+        }
+      } else {
+        for (let m = Math.max(lo, a0); m <= Math.min(hi, a1); m++) out.push([m, m + offset]);
+      }
+      return out;
+    };
+    const visit = (xs: [number, number][], ys: [number, number][], stride: number,
+      f: (k: number, w: number) => void): void => {
+      for (const [j, y] of ys) {
+        const dy = y - Y;
+        for (const [i, x] of xs) {
+          const dx = x - X;
+          f(i + stride * j, Math.exp(-(dx * dx + dy * dy) * inv2r2));
+        }
+      }
+    };
+    // u-faces: x at i (unknowns 1..nx on x-periodic), y at j − ½
+    const uX = axis(X, 0, nx, px, 1, nx - 1);
+    const cX = axis(X + 0.5, -0.5, nx, px, 1, nx); // cells and v-faces: x at i − ½
+    const cY = axis(Y + 0.5, -0.5, ny, py, 1, ny); // cells and u-faces: y at j − ½
+    const vY = axis(Y, 0, ny, py, 1, ny - 1); // v-faces: y at j
+    body(
+      (f) => visit(uX, cY, g.uStride, f),
+      (f) => visit(cX, vY, g.vStride, f),
+      (f) => visit(cX, cY, g.stride, f),
+    );
+    setUBoundary(g, this.u, walls);
+    setVBoundary(g, this.v, walls);
+    for (const d of this.dye) setScalarBoundary(g, d, walls);
+  }
+
+  /**
    * Copy the state of another solver (possibly with a different grid size)
    * into this one by bilinear resampling, then re-project. Used when the
    * resolution or window aspect ratio changes.
@@ -221,17 +332,19 @@ export class FluidSolver {
     // Velocities are in domain units/s and the shorter domain side is always 1,
     // so they carry over unchanged (a changed aspect ratio simply stretches the
     // old state onto the new domain).
+    // On periodic axes the source is sampled with wrap-around (seam faces too).
+    const sw = isPeriodic(src.params.walls) ? src.params.walls : undefined;
     for (let j = 1; j <= g.ny; j++)
       for (let i = 0; i <= g.nx; i++)
-        this.u[uIdx(g, i, j)] = sampleU(sg, src.u, i * sx, (j - 0.5) * sy);
+        this.u[uIdx(g, i, j)] = sampleU(sg, src.u, i * sx, (j - 0.5) * sy, sw);
     for (let j = 0; j <= g.ny; j++)
       for (let i = 1; i <= g.nx; i++)
-        this.v[vIdx(g, i, j)] = sampleV(sg, src.v, (i - 0.5) * sx, j * sy);
+        this.v[vIdx(g, i, j)] = sampleV(sg, src.v, (i - 0.5) * sx, j * sy, sw);
     for (let c = 0; c < 3; c++)
       for (let j = 1; j <= g.ny; j++)
         for (let i = 1; i <= g.nx; i++)
-          this.dye[c][idx(g, i, j)] = sampleCell(sg, src.dye[c], (i - 0.5) * sx, (j - 0.5) * sy);
-    for (const d of this.dye) setScalarBoundary(g, d);
+          this.dye[c][idx(g, i, j)] = sampleCell(sg, src.dye[c], (i - 0.5) * sx, (j - 0.5) * sy, sw);
+    for (const d of this.dye) setScalarBoundary(g, d, this.params.walls);
     setUBoundary(g, this.u, this.params.walls);
     setVBoundary(g, this.v, this.params.walls);
     project(g, this.u, this.v, this.pressure, this.tmp, this.params.dt, 4 * this.params.iterations,
@@ -250,7 +363,7 @@ export class FluidSolver {
     const { u, v, u0, v0, pressure, tmp } = this;
 
     // 1. forces
-    vorticityConfinement(g, u, v, vorticity, dt, this.scratch);
+    vorticityConfinement(g, u, v, vorticity, dt, this.scratch, walls);
     setUBoundary(g, u, walls);
     setVBoundary(g, v, walls);
 
@@ -278,13 +391,15 @@ export class FluidSolver {
 
     // 7. dye
     const fade = dyeDissipation > 0 ? Math.exp(-dyeDissipation * dt) : 1;
+    const periodic = isPeriodic(walls);
     for (const d of this.dye) {
+      if (periodic) setScalarBoundary(g, d, walls); // wrapped ghosts for the stencils
       if (diffusion > 0) {
         tmp.set(d);
-        diffuseScalar(g, d, tmp, diffusion, dt, iterations);
+        diffuseScalar(g, d, tmp, diffusion, dt, iterations, walls);
       }
       tmp.set(d);
-      advectScalar(g, d, tmp, u, v, dt);
+      advectScalar(g, d, tmp, u, v, dt, walls);
       if (fade !== 1) for (let k = 0; k < d.length; k++) d[k] *= fade;
     }
 
@@ -313,7 +428,41 @@ export class FluidSolver {
     // Stream function ψ at cell corners; u = ∂ψ/∂y, v = −∂ψ/∂x is discretely divergence free.
     const cs = nx + 1;
     const psi = new Float32Array(cs * (ny + 1));
-    for (let n = 0; n < vortices; n++) {
+    const walls = this.params.walls;
+    if (isPeriodic(walls)) {
+      // Periodic ψ (vortices wrap across seams, nearest-image distance), so the
+      // seeded field is exactly divergence free on the torus / channel too.
+      const px = periodicX(walls);
+      const py = periodicY(walls);
+      const reach = 3 * r;
+      for (let n = 0; n < vortices; n++) {
+        const cx = rand() * nx;
+        const cy = rand() * ny;
+        const s = (rand() < 0.5 ? -1 : 1) * amplitude * r * h * 1.65 * (0.5 + rand());
+        for (let j = 0; j <= ny; j++) {
+          let dy = j - cy;
+          if (py) dy -= ny * Math.round(dy / ny);
+          if (Math.abs(dy) > reach) continue;
+          for (let i = 0; i <= nx; i++) {
+            let dx = i - cx;
+            if (px) dx -= nx * Math.round(dx / nx);
+            if (Math.abs(dx) > reach) continue;
+            psi[i + cs * j] += s * Math.exp(-(dx * dx + dy * dy) / (2 * r * r));
+          }
+        }
+      }
+      // make the seam corners identical (ψ(0) ≡ ψ(n))
+      if (px) for (let j = 0; j <= ny; j++) psi[nx + cs * j] = psi[cs * j];
+      if (py) for (let i = 0; i <= nx; i++) psi[i + cs * ny] = psi[i];
+      const iLast = uLastI(g, walls);
+      const jLast = vLastJ(g, walls);
+      for (let j = 1; j <= ny; j++)
+        for (let i = 1; i <= iLast; i++)
+          this.u[uIdx(g, i, j)] += (psi[i + cs * j] - psi[i + cs * (j - 1)]) / h;
+      for (let j = 1; j <= jLast; j++)
+        for (let i = 1; i <= nx; i++)
+          this.v[vIdx(g, i, j)] -= (psi[i + cs * j] - psi[i - 1 + cs * j]) / h;
+    } else for (let n = 0; n < vortices; n++) {
       const cx = rand() * nx;
       const cy = rand() * ny;
       const s = (rand() < 0.5 ? -1 : 1) * amplitude * r * h * 1.65 * (0.5 + rand());
@@ -325,12 +474,14 @@ export class FluidSolver {
           psi[i + cs * j] += s * Math.exp(-(dx * dx + dy * dy) / (2 * r * r));
         }
     }
-    for (let j = 1; j <= ny; j++)
-      for (let i = 1; i < nx; i++)
-        this.u[uIdx(g, i, j)] += (psi[i + cs * j] - psi[i + cs * (j - 1)]) / h;
-    for (let j = 1; j < ny; j++)
-      for (let i = 1; i <= nx; i++)
-        this.v[vIdx(g, i, j)] -= (psi[i + cs * j] - psi[i - 1 + cs * j]) / h;
+    if (!isPeriodic(walls)) {
+      for (let j = 1; j <= ny; j++)
+        for (let i = 1; i < nx; i++)
+          this.u[uIdx(g, i, j)] += (psi[i + cs * j] - psi[i + cs * (j - 1)]) / h;
+      for (let j = 1; j < ny; j++)
+        for (let i = 1; i <= nx; i++)
+          this.v[vIdx(g, i, j)] -= (psi[i + cs * j] - psi[i - 1 + cs * j]) / h;
+    }
     setUBoundary(g, this.u, this.params.walls);
     setVBoundary(g, this.v, this.params.walls);
     // Colourful dye patches (a 8 × 5 checkerboard of hues) so the emerging
@@ -348,20 +499,43 @@ export class FluidSolver {
         this.dye[1][k] += 0.8 * c[1];
         this.dye[2][k] += 0.8 * c[2];
       }
-    for (const d of this.dye) setScalarBoundary(g, d);
+    for (const d of this.dye) setScalarBoundary(g, d, walls);
   }
 
   /** Refresh cell-centred velocity, divergence and vorticity fields. */
   updateDiagnostics(): void {
     const g = this.grid;
-    cellVelocity(g, this.u, this.v, this.uc, this.vc);
+    const walls = this.params.walls;
+    if (isPeriodic(walls)) {
+      setUBoundary(g, this.u, walls);
+      setVBoundary(g, this.v, walls);
+    }
+    // periodic: wrapped ghosts give correct vorticity in the seam cells
+    cellVelocity(g, this.u, this.v, this.uc, this.vc, walls);
     computeDivergence(g, this.u, this.v, this.divergence);
     computeVorticity(g, this.uc, this.vc, this.vorticity);
   }
 
   /** Bilinearly sample a cell-centred field at grid position (X, Y). */
   sample(f: Float32Array, X: number, Y: number): number {
-    return sampleCell(this.grid, f, X, Y);
+    return sampleCell(this.grid, f, X, Y, this.params.walls);
+  }
+
+  /**
+   * Mean velocity (Σu, Σv over the distinct faces, divided by the face count;
+   * on a periodic axis the seam face is counted once). This is the total
+   * momentum per unit area, which is conserved on a fully periodic domain.
+   */
+  meanVelocity(): [number, number] {
+    const g = this.grid;
+    const walls = this.params.walls;
+    const i0 = periodicX(walls) ? 1 : 0;
+    const j0 = periodicY(walls) ? 1 : 0;
+    let su = 0;
+    let sv = 0;
+    for (let j = 1; j <= g.ny; j++) for (let i = i0; i <= g.nx; i++) su += this.u[uIdx(g, i, j)];
+    for (let j = j0; j <= g.ny; j++) for (let i = 1; i <= g.nx; i++) sv += this.v[vIdx(g, i, j)];
+    return [su / ((g.nx + 1 - i0) * g.ny), sv / (g.nx * (g.ny + 1 - j0))];
   }
 
   /** Kinetic energy ½∫|u|² dA (from cell-centred velocities; call updateDiagnostics first). */
