@@ -436,6 +436,97 @@ not a real length scale of the model.
 
 ![Order parameter / correlations panel in the ordered state (flocking quick start, t ≈ 5.6 s): P(cos θ_ij) is a spike at 1, ⟨cos θ_ij⟩ = 1.000, C(r) ≈ 1, connected C(r) crosses zero at ξ ≈ 0.38, and the time series shows the transition](docs/correlations.png)
 
+### Delay sweep: alignment order vs delay (headless)
+
+`scripts/delay-sweep.ts` runs the solver headless, without the browser, over a
+range of equal delays t_self = t_nb = t. `scripts/plot-delay-sweep.py` makes the
+figures, and `scripts/delay-sweep-theory.py` computes the linear theory. Data and
+figures are in `docs/sweeps/`.
+
+**Setup.** Periodic torus, 128 × 72. Cucker–Smale kernel only, at the defaults
+S = 2/s, R = 0.05, β = 1, without Motsch–Tadmor normalisation. Local viscosity
+ν = 0, no vorticity confinement, no stirring. Self-propulsion on with τ = 1 s
+and the default v₀ = 0.5. Δt = 1/60 s. The delays act on the kernel term only.
+Delays t = 0, 0.05, …, 2 s (41 values) × 3 seeds = 123 runs of 120 s simulated
+time each (7200 steps).
+
+- **Start:** `seedActiveTurbulence(seed, 0.05)`, i.e. 40 random Gaussian
+  vortices, |u| ≈ 0.05, divergence-free. Seeds are 1000, 1017 and 1034, the same
+  three for every delay.
+- **Sampling:** every 0.5 s, the exact ⟨cos θ_ij⟩ and P(cos θ_ij) (40 bins,
+  30 000 random pairs), plus φ, ⟨|u|⟩ and ξ.
+- **Averages:** over the full run (0–120 s) and over the steady state (60–120 s,
+  with its temporal std). The error bars are the spread between seeds.
+- **Run time:** 27 min on 8 cores (12 500 CPU-s; 85–160 s per run).
+- **Resolution check:** the same sweep on the full 219 × 128 grid, 1 seed,
+  t = 0–1 s in steps of 0.1 s (15 min).
+
+![P(cos θ_ij) vs delay (log colour)](docs/sweeps/heatmap_log.png)
+
+![⟨cos θ_ij⟩ vs delay](docs/sweeps/meancos_vs_delay.png)
+
+| t (s) | 0–0.15 | 0.20 | 0.25 | 0.30 | 0.40 | 0.50 | 0.60 | 0.70 | 0.80 | 1.0 | 1.5 | 2.0 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ⟨cos θ_ij⟩ (60–120 s) | 1.000 | 0.927 | 0.827 | 0.696 | 0.454 | 0.307 | 0.191 | 0.123 | 0.046 | 0.018 | 0.008 | 0.006 |
+| same, 219 × 128 (1 seed) | 1.000 (t = 0), 0.939 (t = 0.1) | 0.741 | | 0.517 | 0.324 | 0.190 | 0.127 | 0.035 | 0.023 | 0.005 | | |
+
+**Findings.**
+
+- **Order is lost** abruptly between t = 0.15 s (a perfect flock in every seed,
+  P is a spike at cos θ = 1) and t = 0.20 s. It then falls smoothly: 0.5 at
+  t ≈ 0.38 s, 0.1 at t ≈ 0.74 s, and below 0.05 from t = 0.80 s. Above
+  t ≈ 1.1 s it is ≈ 0.01 (φ ≈ 0.05–0.1). There P(cos θ) is the arcsine law of
+  random directions, with peaks at ±1.
+- **No re-entrance.** ⟨cos θ_ij⟩ decreases monotonically within the error bars
+  over the whole range. In the disordered regime, however, the structures keep
+  growing: the steady-state correlation length ξ rises from 0.08 (t = 0.2) to
+  0.25 (t = 1) and ≈ 0.37 (t ≥ 1.5). For t ≥ 1.5 s the mean speed also jumps
+  above v₀, to ⟨|u|⟩ ≈ 0.59 (from 0.40 at t = 1). The flow forms large swirls
+  rather than going back to a flock.
+- **Theory.** For the fluid **at rest**, the equal-delay characteristic
+  equation λ = −S(1 − K̂)e^{−λt} predicts ringing at S t = 1/e (t = 0.184 s)
+  and instability of the shortest waves at S t = π/2 (t = 0.785 s). The ordered
+  phase does end near 0.184 s, and the order is essentially gone (⟨cos⟩ ≈ 0.05)
+  at 0.785 s. But the theory that actually applies is the one for a **moving
+  flock**. The delayed term reads u(x, t − τ) at a fixed point while the flock
+  moves at U = v₀, so a mode picks up a Doppler phase:
+  λ + i k·U = −S(1 − K̂)e^{−λt}.
+  - Without numerical damping this is unstable for any t > 0 (at the grid
+    scale, with growth ≈ 1.8/s at t = 0.05).
+  - Including the damping of the semi-Lagrangian advection, the theory
+    predicts onset at t = 0.14–0.15 s on 128 × 72, matching the observed loss
+    between 0.15 and 0.20.
+  - On 219 × 128 the advection displacement per step is close to a whole cell,
+    so there is less damping, and onset is predicted at t = 0.05–0.08 s. The
+    full-resolution check indeed loses order earlier (⟨cos⟩ = 0.94 at t = 0.1,
+    0.74 at 0.2).
+- **Caveat.** The early loss of order is therefore resolution-dependent. It
+  comes from the Eulerian (fixed-point) delay combined with advection, not only
+  from the alignment dynamics. A Lagrangian delay, i.e. the agent's own past
+  velocity read along its path, would remove the Doppler term. The large-delay
+  behaviour (t ≳ 0.8 s, past S t = π/2) does not depend on the grid.
+
+Files in `docs/sweeps/`:
+
+- `summary.csv`: per run.
+- `meancos_vs_delay.csv`: per delay.
+- `hist_avg.csv`: P averaged over seeds and time.
+- `samples.csv.gz`: every 0.5 s sample.
+- `theory.json` and `theory_advected.json`.
+- The figures as PNG (200 dpi) and PDF: `heatmap_log` (the clearer one),
+  `heatmap_linear` and `meancos_vs_delay`.
+- `fullres-219x128/`: the resolution check.
+
+To reproduce:
+
+```bash
+npx esbuild scripts/delay-sweep.ts --bundle --platform=node --outfile=/tmp/delay-sweep.js
+node /tmp/delay-sweep.js --out /tmp/sweep --jobs 8          # 128×72, 41 delays × 3 seeds × 120 s
+npx esbuild scripts/kernel-symbols.ts --bundle --platform=node --outfile=/tmp/ks.js && node /tmp/ks.js /tmp/sweep/kernel_symbols.json
+python3 scripts/delay-sweep-theory.py /tmp/sweep/kernel_symbols.json /tmp/sweep/theory_advected.json   # numpy, scipy
+python3 scripts/plot-delay-sweep.py /tmp/sweep              # matplotlib
+```
+
 ## Numerical method
 
 The solver follows Jos Stam's **Stable Fluids** (SIGGRAPH 1999; "Real-Time Fluid
