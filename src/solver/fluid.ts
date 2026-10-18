@@ -35,6 +35,7 @@ import {
 } from './ops';
 import { NonlocalOperator, type KernelParams, type KernelType } from './kernels';
 import { FieldHistory } from './delay';
+import { PathTracer } from './lagrangian';
 import { scanModes, type ModeScan } from './stability';
 
 export interface FluidParams {
@@ -94,7 +95,15 @@ export interface FluidParams {
   delayLocal: boolean;
   /** Apply (t_self, t_nb) to the long-range kernel / fractional term. */
   delayKernel: boolean;
+  /**
+   * Where the delayed quantities are read: 'eulerian' = at the fixed grid
+   * point, q(x, t − τ); 'lagrangian' = where the fluid parcel now at x was,
+   * q(X(t − τ), t − τ) (path-following / comoving delay, see lagrangian.ts).
+   */
+  delayMode: DelayMode;
 }
+
+export type DelayMode = 'eulerian' | 'lagrangian';
 
 export const defaultParams: FluidParams = {
   viscosity: 0.00005,
@@ -119,6 +128,7 @@ export const defaultParams: FluidParams = {
   delayNb: 0,
   delayLocal: true,
   delayKernel: true,
+  delayMode: 'eulerian',
 };
 
 /**
@@ -197,6 +207,12 @@ export class FluidSolver {
   private nl?: { key: string; u: NonlocalOperator; v: NonlocalOperator };
   /** Past velocity fields of the delayed viscosity terms (cleared on reset / boundary change). */
   private readonly hist = new FieldHistory();
+  /** Departure maps of the path-following delay (delayMode 'lagrangian'). */
+  readonly tracer = new PathTracer();
+  /** Cached K*F of history frames (Lagrangian delay), keyed by frame array, frame time and operator. */
+  private convCache: { src: ArrayLike<number>; t: number; ops: unknown; wU: Float64Array; wV: Float64Array }[] = [];
+  private lbuf?: { depSU: Float64Array; depSV: Float64Array; depNU: Float64Array; depNV: Float64Array; wU: Float64Array; wV: Float64Array; sU: Float64Array; sV: Float64Array; qU: Float64Array; qV: Float64Array;
+    fU: Float64Array; fV: Float64Array; cU: Float64Array; cV: Float64Array };
   private dbuf?: { f0u: Float32Array; f0v: Float32Array; nbU: Float64Array; nbV: Float64Array;
     selfU: Float64Array; selfV: Float64Array; sumU: Float64Array; sumV: Float64Array };
   private stabCache?: { key: string; value: DelayStability };
@@ -266,6 +282,8 @@ export class FluidSolver {
   /** Forget the stored velocity history of the delayed terms. */
   clearDelayHistory(): void {
     this.hist.clear();
+    this.tracer.reset();
+    this.convCache = [];
   }
 
   /** Effective delays (non-negative, finite). */
@@ -626,6 +644,12 @@ export class FluidSolver {
       if (T >= t) { for (let k = 0; k < u.length; k++) outU[k] = u[k]; for (let k = 0; k < v.length; k++) outV[k] = v[k]; return; }
       hist.read(T, t, b.f0u, b.f0v, outU, outV);
     };
+    if (this.params.delayMode === 'lagrangian') {
+      this.applyDelayedLagrangian(local, kernel, clamp);
+      if (hist.wants(t)) hist.push(t, b.f0u, b.f0v);
+      hist.prune(t + dt);
+      return;
+    }
     if (kernel) {
       const tMid = t + 0.5 * dt;
       read(Math.min(t, tMid - tn), b.nbU, b.nbV);
@@ -679,6 +703,142 @@ export class FluidSolver {
     }
     if (hist.wants(t)) hist.push(t, b.f0u, b.f0v);
     hist.prune(t + dt);
+  }
+
+  /**
+   * Path-following variant of applyDelayedViscosity: the delayed quantities are
+   * sampled at the departure points X(t_m − τ) of the parcels now at each face
+   * (t_m = t + Δt/2), computed by the PathTracer from the velocity history:
+   *   kernel: u ← u + SΔt [ (K*u)(X_nb, t_m − t_nb) − c u(X_self, t_m − t_self) ]
+   *   local:  u ← u + νΔt_s/h² [ Σ_nb u(·, t_s − t_nb)|_{X_nb} − 4 u(X_self, t_s − t_self) ]
+   * (the neighbour quantity is formed on the grid at the past time, then
+   * sampled where the parcel was). t_self = 0: semi-implicit self term as in the
+   * Eulerian path. Local sub-steps reuse the departure points of the step midpoint.
+   */
+  private applyDelayedLagrangian(
+    local: boolean, kernel: boolean, clamp: (x: number) => number,
+  ): void {
+    const g = this.grid;
+    const { u, v } = this;
+    const { dt, walls, viscosity } = this.params;
+    const [ts, tn] = this.delays();
+    const t = this.time;
+    const b = this.dbuf!;
+    const hist = this.hist;
+    if (this.lbuf && (this.lbuf.wU.length !== u.length || this.lbuf.wV.length !== v.length)) this.lbuf = undefined;
+    const lb = (this.lbuf ??= {
+      depSU: new Float64Array(4 * u.length), depSV: new Float64Array(4 * v.length),
+      depNU: new Float64Array(4 * u.length), depNV: new Float64Array(4 * v.length),
+      wU: new Float64Array(u.length), wV: new Float64Array(v.length),
+      sU: new Float64Array(u.length), sV: new Float64Array(v.length),
+      qU: new Float64Array(u.length), qV: new Float64Array(v.length),
+      fU: new Float64Array(u.length), fV: new Float64Array(v.length),
+      cU: new Float64Array(u.length), cV: new Float64Array(v.length),
+    });
+    const cu = lb.cU, cv = lb.cV; // Float64 copy of the step-start field
+    cu.set(b.f0u); cv.set(b.f0v);
+    const tr = this.tracer;
+    const implicitSelf = ts === 0;
+    const curRead = (T: number, oU: Float64Array, oV: Float64Array) => {
+      if (T >= t) { for (let k = 0; k < u.length; k++) oU[k] = b.f0u[k]; for (let k = 0; k < v.length; k++) oV[k] = b.f0v[k]; return; }
+      hist.read(T, t, b.f0u, b.f0v, oU, oV);
+    };
+    tr.departures(g, walls, tn, t, dt, cu, cv, curRead, lb.depNU, lb.depNV);
+    if (!implicitSelf) {
+      if (ts === tn) { lb.depSU.set(lb.depNU); lb.depSV.set(lb.depNV); }
+      else tr.departures(g, walls, ts, t, dt, cu, cv, curRead, lb.depSU, lb.depSV);
+    }
+    tr.retain([ts, tn]);
+    /**
+     * (oU, oV) = quantity at time T sampled along the parcels' paths: for each
+     * bracketing history frame F_f (time T_f, weight w_f of the linear time
+     * interpolation), w_f · Q(F_f)(X(t − τ) + (T_f − t + τ)·w). `make` turns a
+     * frame into the face fields to sample (identity, K*u, or the stencil sum).
+     */
+    const pathRead = (
+      tau: number, T: number, depU: Float64Array, depV: Float64Array, oU: Float64Array, oV: Float64Array,
+      make: (fu: ArrayLike<number>, fv: ArrayLike<number>, tf: number) => [ArrayLike<number>, ArrayLike<number>],
+    ) => {
+      const l = hist.lookup(T, t);
+      const parts: [number, number][] = l.theta > 0 ? [[l.a, 1 - l.theta], [l.b, l.theta]] : [[l.a, 1]];
+      parts.forEach(([fi, wgt], n) => {
+        const fr = fi < 0 ? null : hist.frames[fi];
+        const [qu, qv] = make(fr ? fr.u : b.f0u, fr ? fr.v : b.f0v, fr ? fr.t : NaN);
+        const sh = (fr ? fr.t : t) - (t - tau);
+        tr.sampleAt(0, qu, depU, sh, wgt, oU, n > 0);
+        tr.sampleAt(1, qv, depV, sh, wgt, oV, n > 0);
+      });
+    };
+    // copy Float32 frames to Float64 so the samplers stay monomorphic (≈2× faster)
+    const ident = (fu: ArrayLike<number>, fv: ArrayLike<number>): [ArrayLike<number>, ArrayLike<number>] => {
+      for (let k = 0; k < u.length; k++) lb.fU[k] = fu[k];
+      for (let k = 0; k < v.length; k++) lb.fV[k] = fv[k];
+      return [lb.fU, lb.fV];
+    };
+    if (kernel) {
+      const tMid = t + 0.5 * dt;
+      const ops = this.kernelOperators();
+      // K*F of a stored frame never changes: cache it by (frame array, frame time,
+      // operator) — the newer frame of this step is the older one of the next,
+      // so one convolution per step suffices. The current field (tf = NaN) is never cached.
+      const cache = this.convCache;
+      const conv = (fu: ArrayLike<number>, fv: ArrayLike<number>, tf: number): [ArrayLike<number>, ArrayLike<number>] => {
+        const keep = !Number.isNaN(tf);
+        const hit = keep ? cache.find((c) => c.src === fu && c.t === tf && c.ops === ops) : undefined;
+        if (hit) return [hit.wU, hit.wV];
+        let wU = lb.wU, wV = lb.wV;
+        if (keep) {
+          const e = cache.length >= 3 ? cache.shift()! : null;
+          wU = e && e.wU.length === u.length ? e.wU : new Float64Array(u.length);
+          wV = e && e.wV.length === v.length ? e.wV : new Float64Array(v.length);
+        }
+        wU.fill(0); wV.fill(0);
+        const on = ops.u.neighbourField((i, j) => fu[uIdx(g, i + 1, j + 1)], (i, j, w) => { wU[uIdx(g, i + 1, j + 1)] = w; });
+        ops.v.neighbourField((i, j) => fv[vIdx(g, i + 1, j + 1)], (i, j, w) => { wV[vIdx(g, i + 1, j + 1)] = w; });
+        if (keep && on) cache.push({ src: fu, t: tf, ops, wU, wV });
+        return [wU, wV];
+      };
+      pathRead(tn, Math.min(t, tMid - tn), lb.depNU, lb.depNV, lb.qU, lb.qV, conv);
+      if (!implicitSelf) pathRead(ts, Math.min(t, tMid - ts), lb.depSU, lb.depSV, lb.sU, lb.sV, ident);
+      const { qU, qV, sU, sV } = lb;
+      ops.u.applyDelayedGiven(
+        (i, j) => qU[uIdx(g, i + 1, j + 1)], implicitSelf ? null : (i, j) => sU[uIdx(g, i + 1, j + 1)],
+        (i, j) => u[uIdx(g, i + 1, j + 1)], (i, j, x) => { u[uIdx(g, i + 1, j + 1)] = clamp(x); }, dt);
+      ops.v.applyDelayedGiven(
+        (i, j) => qV[vIdx(g, i + 1, j + 1)], implicitSelf ? null : (i, j) => sV[vIdx(g, i + 1, j + 1)],
+        (i, j) => v[vIdx(g, i + 1, j + 1)], (i, j, x) => { v[vIdx(g, i + 1, j + 1)] = clamp(x); }, dt);
+      setUBoundary(g, u, walls);
+      setVBoundary(g, v, walls);
+    }
+    if (local) {
+      const n = this.localSubsteps().n;
+      const ds = dt / n;
+      const a = (viscosity * ds) / (g.h * g.h);
+      const iLast = uLastI(g, walls), jLast = vLastJ(g, walls);
+      const { sumU, sumV } = b;
+      const { qU, qV, sU, sV } = lb;
+      const nbSum = (fu: ArrayLike<number>, fv: ArrayLike<number>): [ArrayLike<number>, ArrayLike<number>] => {
+        neighbourSumU(g, fu, sumU, walls); neighbourSumV(g, fv, sumV, walls); return [sumU, sumV];
+      };
+      for (let m = 0; m < n; m++) {
+        const tm = t + (m + 0.5) * ds;
+        // reads at or after t use the evolving field at the grid point (as in the Eulerian path)
+        if (tm - tn >= t) { nbSum(u, v); qU.set(sumU); qV.set(sumV); }
+        else pathRead(tn, tm - tn, lb.depNU, lb.depNV, qU, qV, nbSum);
+        if (implicitSelf) {
+          const inv = 1 / (1 + 4 * a);
+          for (let j = 1; j <= g.ny; j++) for (let i = 1; i <= iLast; i++) { const k = uIdx(g, i, j); u[k] = clamp((u[k] + a * qU[k]) * inv); }
+          for (let j = 1; j <= jLast; j++) for (let i = 1; i <= g.nx; i++) { const k = vIdx(g, i, j); v[k] = clamp((v[k] + a * qV[k]) * inv); }
+        } else {
+          if (tm - ts >= t) { for (let k = 0; k < u.length; k++) sU[k] = u[k]; for (let k = 0; k < v.length; k++) sV[k] = v[k]; }
+          else pathRead(ts, tm - ts, lb.depSU, lb.depSV, sU, sV, ident);
+          for (let j = 1; j <= g.ny; j++) for (let i = 1; i <= iLast; i++) { const k = uIdx(g, i, j); u[k] = clamp(u[k] + a * (qU[k] - 4 * sU[k])); }
+          for (let j = 1; j <= jLast; j++) for (let i = 1; i <= g.nx; i++) { const k = vIdx(g, i, j); v[k] = clamp(v[k] + a * (qV[k] - 4 * sV[k])); }
+        }
+        setUBoundary(g, u, walls);
+        setVBoundary(g, v, walls);
+      }
+    }
   }
 
   /** Advance the simulation by one time step of length params.dt. */

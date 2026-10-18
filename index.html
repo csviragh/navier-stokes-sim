@@ -131,6 +131,12 @@
         <label class="slider" title="How old the NEIGHBOURS' velocities are when they arrive">Neighbour delay t<sub>nb</sub> <output id="d-nb-out"></output>
           <input type="range" id="d-nb" min="0" max="2" step="0.01" />
         </label>
+        <label class="row" title="Eulerian: the past field is read at the fixed grid point x. Along path: it is read where the fluid parcel now at x was, X(t − t_del) — a moving flock then behaves like a flock at rest (no Doppler shift)">Delay read
+          <select id="d-mode">
+            <option value="lagrangian">Along path (Lagrangian)</option>
+            <option value="eulerian">Eulerian (fixed point)</option>
+          </select>
+        </label>
         <label class="check" title="ν/h²[Σ_nb u(t − t_nb) − 4u(t − t_self)]"><input type="checkbox" id="d-local" />
           Apply to local viscosity ν∇²<b>u</b></label>
         <label class="check" title="S[(K*u)(t − t_nb) − c·u(t − t_self)]"><input type="checkbox" id="d-kernel" />
@@ -149,6 +155,14 @@
           the readouts above give its most unstable mode λ = growth ± i·frequency. An own delay
           makes the term over-correct (oscillation); with t<sub>self</sub> = 0 it can never become
           unstable. Both 0 = the instantaneous term (exact / implicit update). The dye is not delayed.</p>
+        <p class="hint"><b>Delay read.</b> <i>Eulerian</i> reads the past at the fixed point x, as written above.
+          <i>Along path</i> reads it where the parcel now at x was: X(t − t<sub>d</sub>), traced back through
+          the stored velocity history (RK2, Δt sub-steps). Self term <b>u</b>(X(t − t<sub>self</sub>), t − t<sub>self</sub>);
+          neighbour term (K*<b>u</b>)(·, t − t<sub>nb</sub>) or Σ<sub>nb</sub><b>u</b>(·, t − t<sub>nb</sub>) sampled at
+          X(t − t<sub>nb</sub>) — what the parcel perceived where it was. For a flock moving at <b>U</b> the
+          Eulerian read adds a Doppler phase e<sup>−i<b>k</b>·<b>U</b>t</sup> that destabilises it; along the path the
+          rest-fluid thresholds (S·t = 1/e, π/2 for equal delays) hold in the comoving frame, and the readouts above
+          are exact for it.</p>
       </section>
 
       <details id="corr-panel" class="panel-details" open>

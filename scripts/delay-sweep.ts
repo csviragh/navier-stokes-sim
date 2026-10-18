@@ -5,7 +5,7 @@
  *
  *   npx esbuild scripts/delay-sweep.ts --bundle --platform=node --outfile=/tmp/delay-sweep.js
  *   node /tmp/delay-sweep.js --out /workspace/delay-sweep [--jobs 8] [--nx 128 --ny 72]
- *        [--tmax 120] [--seeds 3] [--dmax 2 --dstep 0.05]
+ *        [--tmax 120] [--seeds 3] [--dmax 2 --dstep 0.05] [--mode eulerian|lagrangian]
  *
  * Every (delay, seed) run is a child process (fork of this file) that writes
  * runs/d<t>_s<seed>.json; existing results are skipped (resumable). The parent
@@ -16,7 +16,7 @@ import { fork } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { cpus } from 'node:os';
 import { join } from 'node:path';
-import { FluidSolver, OrderAnalyzer, type FluidParams } from '../src/solver';
+import { FluidSolver, OrderAnalyzer, type DelayMode, type FluidParams } from '../src/solver';
 
 const arg = (name: string, def: string): string => {
   const i = process.argv.indexOf(`--${name}`);
@@ -29,6 +29,8 @@ const SAMPLE = +arg('sample', '0.5');
 const SEEDS = +arg('seeds', '3');
 const DMAX = +arg('dmax', '2'), DSTEP = +arg('dstep', '0.05');
 const JOBS = +arg('jobs', String(Math.max(1, cpus().length)));
+const MODE = arg('mode', 'eulerian') as DelayMode; // where the delayed terms read: fixed point or along the path
+if (MODE !== 'eulerian' && MODE !== 'lagrangian') throw new Error(`--mode must be eulerian or lagrangian (got ${MODE})`);
 const BINS = 40, PAIRS = 30000;
 
 /** Physics of the sweep (everything else = solver defaults). */
@@ -47,6 +49,7 @@ export const SWEEP_PARAMS: Partial<FluidParams> = {
   kernelMT: false,
   delayLocal: false,         // ν = 0 anyway
   delayKernel: true,
+  delayMode: MODE,
   dt: 1 / 60,
 };
 const SEED_AMPLITUDE = 0.05; // weak random swirl field, |u| ≈ 0.05
@@ -117,14 +120,14 @@ async function main() {
   const todo = jobs.filter(([d, sd]) => !existsSync(join(OUT, 'runs', `d${fmt(d)}_s${sd}.json`)));
   const th = theory();
   writeFileSync(join(OUT, 'theory.json'), JSON.stringify({ ...th, params: SWEEP_PARAMS, nx: NX, ny: NY, tmax: TMAX, sample: SAMPLE, seeds: SEEDS, delays, seedAmplitude: SEED_AMPLITUDE, pairs: PAIRS, bins: BINS }, null, 1));
-  console.log(`${jobs.length} runs (${todo.length} to do) on ${JOBS} processes, grid ${NX}×${NY}, ${TMAX} s each`);
+  console.log(`${jobs.length} runs (${todo.length} to do) on ${JOBS} processes, grid ${NX}×${NY}, ${TMAX} s each, ${MODE} delays`);
   const T0 = Date.now();
   let next = 0, done = 0;
   await new Promise<void>((resolve) => {
     const launch = () => {
       if (next >= todo.length) { if (done === todo.length) resolve(); return; }
       const [d, sd] = todo[next++];
-      const c = fork(process.argv[1], ['--child', '--delay', String(d), '--seed', String(sd), '--out', OUT, '--nx', String(NX), '--ny', String(NY), '--tmax', String(TMAX), '--sample', String(SAMPLE)]);
+      const c = fork(process.argv[1], ['--child', '--delay', String(d), '--seed', String(sd), '--out', OUT, '--nx', String(NX), '--ny', String(NY), '--tmax', String(TMAX), '--sample', String(SAMPLE), '--mode', MODE]);
       c.on('exit', (code) => {
         done++;
         console.log(`[${((Date.now() - T0) / 60000).toFixed(1)} min] ${done}/${todo.length} delay ${fmt(d)} seed ${sd} exit ${code}`);

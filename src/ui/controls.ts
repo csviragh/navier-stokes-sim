@@ -109,6 +109,8 @@ export function bindControls(
   syncs.push(linSlider('d-nb', 'delayNb', s, cb, fmtDelay));
   const delayLocal = $<HTMLInputElement>('d-local');
   delayLocal.addEventListener('change', () => { s.delayLocal = delayLocal.checked; cb.onChange('delayLocal', s); });
+  const delayMode = $<HTMLSelectElement>('d-mode');
+  delayMode.addEventListener('change', () => { s.delayMode = delayMode.value as Settings['delayMode']; cb.onChange('delayMode', s); });
   const delayKernel = $<HTMLInputElement>('d-kernel');
   delayKernel.addEventListener('change', () => { s.delayKernel = delayKernel.checked; cb.onChange('delayKernel', s); });
   $<HTMLButtonElement>('delay-osc').addEventListener('click', () => { cb.onDelayOscillations(); sync(); });
@@ -202,6 +204,7 @@ export function bindControls(
     kernelMT.checked = s.kernelMT;
     delayLocal.checked = s.delayLocal;
     delayKernel.checked = s.delayKernel;
+    delayMode.value = s.delayMode;
     updateKernelUI(s);
     play.textContent = s.paused ? '▶ Play' : '⏸ Pause';
   }
@@ -419,6 +422,7 @@ function updateDelayText(s: Settings): void {
   if (di && di.tauMax > 0) {
     const ms = (x: number) => (x * 1000).toFixed(1);
     set(elI, `history ${di.framesStored}/${di.capacity} frames covering max(t_self, t_nb) = ${di.tauMax.toFixed(2)} s ` +
-      `(every ${ms(di.interval)} ms${di.interval > s.dt * 1.0001 ? ', memory-capped' : ''}) · ${(di.bytes / 2 ** 20).toFixed(1)} MB`);
+      `(every ${ms(di.interval)} ms${di.interval > s.dt * 1.0001 ? ', memory-capped' : ''}) · ${(di.bytes / 2 ** 20).toFixed(1)} MB · ` +
+      (s.delayMode === 'lagrangian' ? 'read along the parcel paths' : 'read at fixed points (Eulerian)'));
   } else set(elI, '');
 }

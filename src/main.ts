@@ -111,6 +111,7 @@ function solverParams(s: Settings): Partial<FluidParams> {
     delayNb: s.delayNb,
     delayLocal: s.delayLocal,
     delayKernel: s.delayKernel,
+    delayMode: s.delayMode,
   };
 }
 

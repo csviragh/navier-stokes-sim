@@ -1,4 +1,4 @@
-import type { KernelType, WallType } from '../solver';
+import type { DelayMode, KernelType, WallType } from '../solver';
 import type { ViewMode } from '../render/renderer';
 
 /** All user-adjustable settings of the app. */
@@ -31,6 +31,8 @@ export interface Settings {
   delayLocal: boolean;
   /** Apply the delays to the long-range kernel / fractional term. */
   delayKernel: boolean;
+  /** Where the delayed terms read the past: at the fixed grid point or along the parcel's path. */
+  delayMode: DelayMode;
   dt: number;
   iterations: number;
   /** Number of cells along the shorter side of the window. */
@@ -64,6 +66,7 @@ export const defaultSettings: Settings = {
   delayNb: 0,
   delayLocal: true,
   delayKernel: true,
+  delayMode: 'lagrangian',
   dt: 1 / 60,
   iterations: 20,
   resolution: 128,

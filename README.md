@@ -360,6 +360,78 @@ u ← u + Δt_s·ν/h² [ Σ_nb u(t_m − t_nb) − 4 u(t_m − t_self) ]   per 
 - With both delays 0 the old code runs unchanged, bit for bit (implicit
   diffusion, exact Fourier kernel on the torus).
 
+**Delay read: Eulerian (fixed point) vs along the path (Lagrangian).** The
+*Delay read* selector sets *where* the past is read. The default in the app is
+**Along path (Lagrangian)**; the solver API default (`delayMode: 'eulerian'`)
+keeps scripts and tests bit-identical to earlier versions.
+
+- *Eulerian (fixed point)* is the scheme above. It reads u(x, t − τ) at the
+  grid point x. For a flock moving at **U**, a mode then picks up the Doppler
+  phase of the advected past, λ + i**k**·**U** = −S(1 − K̂)e^{−λt}, which is
+  unstable at the grid scale for any t > 0, damped only by the advection
+  scheme (see the sweep below).
+- *Along path (Lagrangian)* reads the past where the fluid parcel that is at x
+  now **was**: X(t − τ; x, t), with dX/ds = u(X(s), s), X(t) = x, traced back
+  through the stored velocity history. Per face (u at (i, j − ½), v at
+  (i − ½, j)):
+
+```
+u ← u + Δt·S [ Q_nb − c·Q_self ]                 (kernel; semi-implicit (u + aQ_nb)/(1 + ac) when t_self = 0)
+Q_self = Σ_f w_f · u_f( X_self + (T_f − (t − t_self))·w_self )          T = t + Δt/2 − t_self
+Q_nb   = Σ_f w_f · (K*u_f)( X_nb + (T_f − (t − t_nb))·w_nb )             T = t + Δt/2 − t_nb
+local:  Q_nb uses the stencil sum Σ_nb u_f(x + e) of each frame instead of K*u_f; Q_self samples u_f
+X_τ = X(t − τ; x, t),  w_τ = u(X_τ, t − τ)/h        (cells/s)
+```
+
+  - f runs over the (at most two) history frames bracketing the read time
+    T, with the linear time-interpolation weights w_f. Each frame is sampled
+    at the parcel's position *at that frame's time* T_f, not the time-
+    interpolated field at one position. Interpolating in time at a fixed point
+    would mix two comoving positions and bias the result.
+  - The parcel is the one at x at the *start* of the step: the increment
+    is added before advection moves it. The midpoint time T = t + Δt/2 − τ
+    then sits on its path half a step after X(t − τ).
+  - The neighbour quantity (K*u, or the 5-point stencil sum for ν∇², or
+    G₀ − λ^s for the fractional term) is formed on the grid **at the past time**
+    and then sampled at the parcel's past position. It is what the parcel
+    perceived where it was.
+  - Sampling is bilinear on each face grid (MAC-consistent). On periodic axes
+    positions are unwrapped and indices wrap. At walls positions are clamped
+    to the domain and samples to the outermost face (constant extrapolation).
+  - Trajectories are kept as a displacement map d_τ(x) = x − X(t − τ; x, t)
+    per face and per distinct delay. It is advanced every step by:
+    1. an RK2 back-trace over [t, t + Δt] with the current velocity;
+    2. a bicubic (Catmull–Rom) look-up of the old map;
+    3. an RK2 forward step at the past end, using the history velocities.
+
+    It is rebuilt from a full RK2 back-trace (sub-steps Δt through the
+    history) on start, after a delay change or skipped step, and **every τ/2**.
+    The incremental update composes the map with one-step flows, so its error
+    is stretched by the flow Jacobian at the past end. In a steady cellular
+    test flow it then grew to ~50 cells after 900 steps; with the rebuilds it
+    stays ≤ 0.03 cells.
+  - K*u of a stored frame is cached, so the kernel costs one convolution per
+    step, as in the Eulerian read.
+  - Cost (128 × 72 torus, CS kernel, t = 0.5 s, Node on the dev CPU):
+    11 ms per step Eulerian, ≈ 25 ms Lagrangian. At rest (U = 0) both reads
+    are the same scheme.
+
+- **Theory check** (`tests/lagrangian.test.ts`): a uniformly translating flock
+  (48², U exactly one cell per step, so advection is an exact shift) with a
+  transverse wave, CS S = 2, R = 0.05.
+  - The comoving growth rates match the rest-fluid Lambert-W root
+    λ = W₀(−S(1 − K̂)t)/t:
+
+    | t | measured λ (fit) | Lambert-W rest root |
+    | --- | --- | --- |
+    | 0.3 s | −2.359 ± 3.031i | −2.358 ± 3.034i |
+    | 0.9 s | 0.065 ± 1.785i | 0.064 ± 1.786i |
+    | 0.15 s | monotone decay at the real root (below 1/(eS(1 − K̂))) | |
+
+  - The threshold S(1 − K̂)t = π/2 separates decay and growth, as at rest.
+  - With the Eulerian read the same flock grows at t = 0.3 s (+0.17/s, rest
+    theory −2.36/s): the Doppler destabilisation.
+
 References:
 
 - N. D. Hayes, "Roots of the transcendental equation associated with a certain
@@ -502,9 +574,65 @@ time each (7200 steps).
     0.74 at 0.2).
 - **Caveat.** The early loss of order is therefore resolution-dependent. It
   comes from the Eulerian (fixed-point) delay combined with advection, not only
-  from the alignment dynamics. A Lagrangian delay, i.e. the agent's own past
-  velocity read along its path, would remove the Doppler term. The large-delay
-  behaviour (t ≳ 0.8 s, past S t = π/2) does not depend on the grid.
+  from the alignment dynamics. The large-delay behaviour (t ≳ 0.8 s, past
+  S t = π/2) does not depend on the grid. The Lagrangian rerun below removes the
+  Doppler term.
+
+#### Rerun with the delay read along the path (Lagrangian)
+
+Same parameters and seeds, with `--mode lagrangian` (see *Delay read* above).
+Data and figures are in `docs/sweeps/lagrangian/`.
+
+- **Run time:** 65.5 min on 8 processes for 123 runs (30 350 CPU-s).
+- **219 × 128 check:** t = 0–1 s in steps of 0.1 s, 3 seeds, still running. The
+  partial results so far are in `fullres-219x128-partial/`.
+
+![P(cos θ_ij) vs delay, Lagrangian (log colour)](docs/sweeps/lagrangian/heatmap_log.png)
+
+![Eulerian vs Lagrangian ⟨cos θ_ij⟩ vs delay on both grids](docs/sweeps/lagrangian/meancos_compare.png)
+
+| t (s) | 0–0.95 | 1.0 | 1.05 | 1.1 | 1.2 | 1.3 | 1.4 | 1.5 | 1.6 | 1.8 | 2.0 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Lagrangian ⟨cos θ_ij⟩ (60–120 s), 128 × 72, 3 seeds | 1.000 | 0.991 | 0.743 | 0.853 | 0.815 | 0.565 | 0.853 | 0.789 | 0.930 | 0.877 | 0.866 |
+| Lagrangian, 219 × 128, seed 1000 (partial) | 1.000 (t = 0–0.8) | | | | | | | | | | |
+| Eulerian, 128 × 72 (for comparison) | 1.000 → 0.046 (t = 0.15 → 0.8) | 0.018 | | | | | | 0.008 | | | 0.006 |
+
+**Findings.**
+
+- **The early loss of order was an artefact of the fixed-point read.** With the
+  Lagrangian read the flock stays perfect (⟨cos⟩ = 1.000 in every seed) up to
+  t = 0.95 s, about 6× longer than with the Eulerian read (0.15 s). On 219 × 128
+  it is also perfect up to 0.8 s so far (the Eulerian read gave 0.94 at 0.1 s and
+  0.024 at 0.8 s). The grid dependence of the onset is gone.
+- **Onset at 1.0–1.05 s, beyond the rest threshold π/(2S) = 0.785 s.**
+  `scripts/delay-sweep-theory-lagrangian.py` (→ `theory_lagrangian.json`)
+  linearises the comoving equations around a moving flock:
+
+  λ = −γ_SL(k) − γ_sp(k) − S(1 − K̂)E e^{−λt}
+
+  - Self-propulsion damps only the speed part of a perturbation,
+    γ_sp = (ê·Û)²/τ. The most unstable modes are pure direction waves
+    (k ∥ U), so self-propulsion leaves the threshold at 0.79 s.
+  - The rest instability is fastest for the shortest waves (K̂ → 0), and those
+    are damped by the solver's semi-Lagrangian advection of the moving flock
+    (γ_SL). With that damping the predicted onset is 1.18–1.21 s on 128 × 72 and
+    0.88–0.97 s on 219 × 128, depending on the flock direction.
+  - The bilinear path sampling (E) changes this by ≤ 0.01 s.
+  - The observed onset lies between the undamped (0.79 s) and damped (~1.2 s)
+    predictions. The actual flock directions are arbitrary, and the growth just
+    past 0.79 s is slow: 0.11/s at 0.9 s, so many e-folds are needed from
+    round-off.
+- **No disordered phase.** For t > 1 s the steady ⟨cos⟩ is 0.55–0.93 (φ ≈ 0.92–0.99,
+  ⟨|u|⟩ ≈ v₀), with large seed-to-seed and temporal spread. Some runs lose order
+  and regain it.
+  - The mean-velocity mode (K̂ = 1) is neutral, and speed modes relax at 1/τ.
+  - The damped growth rates stay below 0.17/s.
+  - So the instability saturates as a rippling, intermittently breaking flock,
+    not as the turbulence of the Eulerian runs.
+
+Reproduce with `node /tmp/delay-sweep.js --out /tmp/sweep-lag --jobs 8 --mode lagrangian`, then
+`python3 scripts/plot-delay-sweep.py /tmp/sweep-lag` and
+`python3 scripts/plot-delay-compare.py docs/sweeps /tmp/sweep-lag /tmp/sweep-lag`.
 
 Files in `docs/sweeps/`:
 
@@ -692,6 +820,7 @@ src/
     kernels.ts       #   nonlocal viscosity / alignment kernels (spectral),
                      #   explicit / semi-implicit delayed kernel update
     delay.ts         #   FieldHistory: ring buffer of past u, v fields
+    lagrangian.ts    #   PathTracer: departure maps for the along-path (Lagrangian) delay read
     stability.ts     #   rightmost root of λ + A e^{−λ t_self} − B e^{−λ t_nb}
     correlations.ts  #   order parameters: P(cos θ_ij), exact ⟨cos θ_ij⟩, C(r), ξ (FFT)
     fluid.ts         #   FluidSolver: state + time stepping, splat/stir input
@@ -713,6 +842,7 @@ tests/
   kernels.test.ts    # tests for the long-range viscosity / alignment kernels
   delays.test.ts     # tests for the own / neighbour delays (stability theory)
   correlations.test.ts # tests for the order parameters / correlation functions
+  lagrangian.test.ts # tests for the along-path delay read (comoving theory)
   lambert.ts         # Lambert W₀ for the delay characteristic equation
   fingerprint.ts     # bit-exact fingerprints of scripted runs
 index.html           # page layout, control panel, equations panel
@@ -798,6 +928,26 @@ boundary types are bit-identical to commit 22fd8ba.
   capped in memory, is cleared by reset, boundary change and delays → 0, and
   runs are reproducible; the panel readouts identify the right modes.
 
+`tests/lagrangian.test.ts` checks the path-following (Lagrangian) delay read (8 tests):
+
+- **Comoving theory.** On a uniformly translating flock with a transverse
+  wave, the comoving growth rate and frequency match the rest-fluid Lambert-W
+  root at t = 0.3 and 0.9 s, within 0.03/s and 0.02 rad/s.
+- **Thresholds.** Below 1/(eS(1 − K̂)) the mode decays monotonically at the real
+  root. S(1 − K̂)t = π/2 ± 0.05 s separates decay from growth.
+- **Eulerian contrast.** The Eulerian read of the same flock is
+  Doppler-destabilised at t = 0.3 s.
+- **At rest.** In the linear regime the Lagrangian and Eulerian reads agree.
+- **Uniform flow.** A uniform flow stays unchanged.
+- **Departure maps.** The incremental maps, with their τ/2 rebuilds, agree with
+  a fine full RK2 back-trace within 0.05 cells, both in a periodic cellular
+  flow and in a walled box vortex.
+- **Robustness.** Local + kernel (and fractional) delays with t_self ≠ t_nb stay
+  finite on every boundary, and `clearDelayHistory()` drops the maps.
+
+The Eulerian fingerprint tests still pass unchanged: `delayMode: 'eulerian'`
+is bit-identical to before.
+
 `tests/selfprop.test.ts` checks the self-propulsion term:
 
 - a uniform flow relaxes toward v₀ from below and from above, matching
@@ -875,6 +1025,19 @@ Vite is configured with `base: './'`, so the build works under
   delay, 37.1 ms with t_self = t_nb = 0.42; local-only torus 17.6 ms without,
   16.7 ms with t_self = 0.5, t_nb = 2 (the explicit update replaces the implicit
   solve); no-slip with CS 46.7 vs 43.6 ms.
+- Lagrangian delay read:
+  - Wall handling is a clamp with constant extrapolation, not a reflection.
+  - Parcels that would leave through a wall stop at it.
+  - Trajectories use the stored (Float32, possibly memory-coarsened) history
+    with RK2 steps of Δt. Each frame is sampled at its bracketing parcel
+    position, extrapolated linearly from X(t − τ).
+  - The method costs about 2–2.5× the Eulerian delayed step (more tracing:
+    full map rebuilds every τ/2). The UI stays responsive at the default
+    resolution, but it is slower than the Eulerian read.
+  - The comoving theory holds exactly only for a uniformly moving flock. In
+    sheared or turbulent flow, parcels that are neighbours now were not
+    neighbours at t − τ, and the K*u at the past position is the field the
+    parcel saw, not what its current neighbours did.
 - Order parameters: they use the cell-centred velocity of every grid cell as
   one "agent", so neighbouring cells are strongly correlated by viscosity and
   the solver's interpolation. ξ is resolution- and box-dependent (r ≤ half the

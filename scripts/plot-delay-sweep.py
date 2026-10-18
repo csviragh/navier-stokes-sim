@@ -68,7 +68,9 @@ def mark(ax, heat=False):
         hs.append(ax.axvline(x, color=col, ls=st['ls'], lw=1.3, label=f"{lab.replace(chr(10), ' ')}: t = {x:.3g} s"))
     return hs
 
-caption = (f"CS kernel S = {th['S']}/s, R = {th['params']['kernelRange']}, β = {th['params']['kernelBeta']}; "
+MODE = th['params'].get('delayMode', 'eulerian')
+MODE_TXT = 'delays read along the parcel paths (Lagrangian)' if MODE == 'lagrangian' else 'delays read at fixed points (Eulerian)'
+caption = (f"{MODE_TXT}; CS kernel S = {th['S']}/s, R = {th['params']['kernelRange']}, β = {th['params']['kernelBeta']}; "
            f"self-propulsion τ = {th['params']['selfPropTau']} s, v₀ = {th['params']['selfPropV0']}; ν = 0; torus {th['nx']}×{th['ny']}; "
            f"{len(seeds)} seeds × {tmax:.0f} s")
 
@@ -114,8 +116,12 @@ ax.errorbar(x, m_st, yerr=sd_st, fmt='s-', ms=3.5, lw=1.2, capsize=2, color='#d6
 fr = os.path.join(src, 'fullres-219x128', 'summary.csv')
 if os.path.exists(fr):
     fr_rows = list(csv.DictReader(open(fr)))
-    fx = [float(r['delay']) for r in fr_rows]; fy = [float(r['meanCos_steady']) for r in fr_rows]
-    ax.plot(fx, fy, 'o', mfc='none', mec='k', ms=5, label='steady state, 219×128 check (1 seed)')
+    by = {}
+    for r in fr_rows: by.setdefault(float(r['delay']), []).append(float(r['meanCos_steady']))
+    fx = sorted(by); fy = [np.mean(by[d]) for d in fx]; fs = [np.std(by[d], ddof=1) if len(by[d]) > 1 else 0 for d in fx]
+    ns = max(len(v) for v in by.values())
+    ax.errorbar(fx, fy, yerr=fs if ns > 1 else None, fmt='o', mfc='none', mec='k', ecolor='k', ms=5, capsize=2,
+                label=f"steady state, 219×128 check ({ns} seed{'s' if ns > 1 else ''})")
     adv_all = json.load(open(adv_path)) if os.path.exists(adv_path) else {}
     if '219x128' in adv_all:
         t2 = min(adv_all['219x128'][f't_unstable_flock_{d}_SL'] for d in ('x', 'diag', 'y'))
@@ -123,7 +129,7 @@ if os.path.exists(fr):
 ax.set_xlabel(r'delay $t_{\mathrm{self}} = t_{\mathrm{nb}} = t$ (s)')
 ax.set_ylabel(r'$\langle\cos\theta_{ij}\rangle$ (exact pair average)')
 ax.set_ylim(-0.05, 1.05); ax.set_xlim(-0.03, x.max() + 0.03)
-ax.legend(fontsize=7.5, frameon=False, loc='upper right')
+ax.legend(fontsize=7.5, frameon=False, loc='best')
 ax.set_title('Average pairwise velocity correlation vs delay', fontsize=11)
 fig.text(0.5, 0.01, caption, ha='center', fontsize=6.5, color='0.3')
 for ext in ('png', 'pdf'):

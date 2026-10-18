@@ -260,6 +260,54 @@ export class NonlocalOperator {
     }
   }
 
+  /**
+   * Neighbour part of the delayed term as a field: w = (K * f)(x) for
+   * convolution kernels, ((G₀ − (−Δ)^s) f)(x) for the fractional Laplacian
+   * (the same transform as applyDelayed). Used by the path-following delay,
+   * which samples w at the parcels' past positions. Returns false if the term
+   * is inactive.
+   */
+  neighbourField(getNb: (i: number, j: number) => number, setW: (i: number, j: number, w: number) => void): boolean {
+    const { n1, n2, A, re, params } = this;
+    if (!(params.strength > 0)) return false;
+    const fractional = params.kernel === 'fractional';
+    if (params.kernel === 'none' || (fractional && !this.fullyPeriodic)) return false;
+    this.load(getNb);
+    if (fractional) {
+      const G0 = this.diagonal();
+      this.fft2(true, n2);
+      const { sym, im } = this;
+      for (let k = 0; k < re.length; k++) { const m = G0 - sym[k]; re[k] *= m; im[k] *= m; }
+      this.fft2(false, n2);
+    } else this.convolveLoaded();
+    for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) setW(i, j, re[i + A * j]);
+    return true;
+  }
+
+  /** The update of applyDelayed with a given neighbour field w (see neighbourField). */
+  applyDelayedGiven(
+    getW: (i: number, j: number) => number,
+    getSelf: ((i: number, j: number) => number) | null,
+    getCur: (i: number, j: number) => number,
+    set: (i: number, j: number, x: number) => void,
+    dt: number,
+  ): void {
+    const { n1, n2, params } = this;
+    const S = params.strength;
+    if (!(S > 0) || !(dt > 0)) return;
+    const fractional = params.kernel === 'fractional';
+    if (params.kernel === 'none' || (fractional && !this.fullyPeriodic)) return;
+    const periodic = this.fullyPeriodic;
+    const c = this.c;
+    for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) {
+      const w = getW(i, j);
+      const ci = fractional ? this.diagonal() : periodic ? 1 : c![i + n1 * j];
+      const a = !fractional && !periodic && params.motschTadmor ? (S * dt) / ci : S * dt;
+      const cur = getCur(i, j);
+      set(i, j, getSelf ? cur + a * (w - ci * getSelf(i, j)) : (cur + a * w) / (1 + a * ci));
+    }
+  }
+
   private diag = NaN;
   /**
    * Diagonal (self) weight of the operator: 1 for normalised convolution
