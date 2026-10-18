@@ -6,6 +6,7 @@
  *   npx esbuild scripts/delay-sweep.ts --bundle --platform=node --outfile=/tmp/delay-sweep.js
  *   node /tmp/delay-sweep.js --out /workspace/delay-sweep [--jobs 8] [--nx 128 --ny 72]
  *        [--tmax 120] [--seeds 3] [--dmax 2 --dstep 0.05] [--mode eulerian|lagrangian]
+ *        [--nu 0.01 [--iters 40]]   (undelayed local viscosity ν; implicit Gauss–Seidel sweeps)
  *
  * Every (delay, seed) run is a child process (fork of this file) that writes
  * runs/d<t>_s<seed>.json; existing results are skipped (resumable). The parent
@@ -31,12 +32,15 @@ const DMAX = +arg('dmax', '2'), DSTEP = +arg('dstep', '0.05');
 const JOBS = +arg('jobs', String(Math.max(1, cpus().length)));
 const MODE = arg('mode', 'eulerian') as DelayMode; // where the delayed terms read: fixed point or along the path
 if (MODE !== 'eulerian' && MODE !== 'lagrangian') throw new Error(`--mode must be eulerian or lagrangian (got ${MODE})`);
+const NU = +arg('nu', '0');          // local viscosity ν (NOT delayed: delayLocal = false)
+const ITERS = +arg('iters', '20');   // Gauss–Seidel sweeps of the implicit viscosity (20 = solver default)
 const BINS = 40, PAIRS = 30000;
 
 /** Physics of the sweep (everything else = solver defaults). */
 export const SWEEP_PARAMS: Partial<FluidParams> = {
   walls: 'periodic',
-  viscosity: 0,              // no local viscosity
+  viscosity: NU,             // local viscosity (default 0); applied instantaneously, never delayed
+  iterations: ITERS,
   diffusion: 0,
   vorticity: 0,              // no vorticity confinement
   selfPropulsion: true,
@@ -47,7 +51,7 @@ export const SWEEP_PARAMS: Partial<FluidParams> = {
   kernelRange: 0.05,         // default R
   kernelBeta: 1,             // default β
   kernelMT: false,
-  delayLocal: false,         // ν = 0 anyway
+  delayLocal: false,         // the local viscosity is never delayed
   delayKernel: true,
   delayMode: MODE,
   dt: 1 / 60,
@@ -127,7 +131,7 @@ async function main() {
     const launch = () => {
       if (next >= todo.length) { if (done === todo.length) resolve(); return; }
       const [d, sd] = todo[next++];
-      const c = fork(process.argv[1], ['--child', '--delay', String(d), '--seed', String(sd), '--out', OUT, '--nx', String(NX), '--ny', String(NY), '--tmax', String(TMAX), '--sample', String(SAMPLE), '--mode', MODE]);
+      const c = fork(process.argv[1], ['--child', '--delay', String(d), '--seed', String(sd), '--out', OUT, '--nx', String(NX), '--ny', String(NY), '--tmax', String(TMAX), '--sample', String(SAMPLE), '--mode', MODE, '--nu', String(NU), '--iters', String(ITERS)]);
       c.on('exit', (code) => {
         done++;
         console.log(`[${((Date.now() - T0) / 60000).toFixed(1)} min] ${done}/${todo.length} delay ${fmt(d)} seed ${sd} exit ${code}`);

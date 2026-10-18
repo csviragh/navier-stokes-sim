@@ -929,7 +929,8 @@ boundary types are bit-identical to commit 22fd8ba.
   capped in memory, is cleared by reset, boundary change and delays → 0, and
   runs are reproducible; the panel readouts identify the right modes.
 
-`tests/lagrangian.test.ts` checks the path-following (Lagrangian) delay read (8 tests):
+`tests/lagrangian.test.ts` checks the path-following (Lagrangian) delay read and the
+viscosity-regularised Eulerian read (9 tests):
 
 - **Comoving theory.** On a uniformly translating flock with a transverse
   wave, the comoving growth rate and frequency match the rest-fluid Lambert-W
@@ -938,6 +939,11 @@ boundary types are bit-identical to commit 22fd8ba.
   root. S(1 − K̂)t = π/2 ± 0.05 s separates decay from growth.
 - **Eulerian contrast.** The Eulerian read of the same flock is
   Doppler-destabilised at t = 0.3 s.
+- **ν regularisation.** For the Eulerian read with an undelayed viscosity, the
+  growth rate of a translating flock's wave (m = 2, t = 0.6 s, where the
+  rest-fluid root is stable) matches the rightmost root of
+  μ + νk_h² = −S(1 − K̂)e^{−μt}e^{ik·Ut} within 0.03/s for ν = 0 and ν = ν_c/2,
+  and the wave decays for ν = 1.2 ν_c (ν_c k_h² = S(1 − K̂)).
 - **At rest.** In the linear regime the Lagrangian and Eulerian reads agree.
 - **Uniform flow.** A uniform flow stays unchanged.
 - **Departure maps.** The incremental maps, with their τ/2 rebuilds, agree with

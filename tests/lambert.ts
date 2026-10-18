@@ -27,3 +27,29 @@ export function delayRoot(a: number, tau: number): { re: number; im: number } {
   const w = lambertW0(-a * tau);
   return { re: w.re / tau, im: w.im / tau };
 }
+
+/**
+ * Rightmost root of the Doppler-shifted delay equation with an undelayed damping g
+ * (viscosity ν k², …): μ + g = −a e^{−μ τ} e^{iφ} (φ = k·U τ, Eulerian read of a
+ * flock moving at U, μ in the comoving frame). Newton from a grid of starts.
+ */
+export function dopplerRoot(a: number, g: number, tau: number, phi: number): { re: number; im: number } {
+  let best = { re: -Infinity, im: 0 };
+  for (let sr = -6; sr <= 6; sr += 1.5) for (let si = -40; si <= 40; si += 2) {
+    let mr = sr, mi = si, ok = false;
+    for (let it = 0; it < 80; it++) {
+      // f = μ + g + a e^{−μτ + iφ},  f' = 1 − aτ e^{−μτ + iφ}
+      const ex = a * Math.exp(-mr * tau), ar = -mi * tau + phi;
+      const er = ex * Math.cos(ar), ei = ex * Math.sin(ar);
+      const fr = mr + g + er, fi = mi + ei;
+      const dr = 1 - tau * er, di = -tau * ei;
+      const den = dr * dr + di * di;
+      const xr = (fr * dr + fi * di) / den, xi = (fi * dr - fr * di) / den;
+      mr -= xr; mi -= xi;
+      if (!Number.isFinite(mr) || !Number.isFinite(mi)) break;
+      if (Math.hypot(xr, xi) < 1e-13) { ok = true; break; }
+    }
+    if (ok && mr > best.re) best = { re: mr, im: mi };
+  }
+  return best;
+}

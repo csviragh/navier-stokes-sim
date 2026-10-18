@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createGrid, FluidSolver, PathTracer, rightmostRoot, uIdx, vIdx, type KernelType, type WallType } from '../src/solver';
-import { delayRoot } from './lambert';
+import { delayRoot, dopplerRoot } from './lambert';
 
 /**
  * Uniformly translating flock u = U (exactly one cell per step, so the
@@ -8,9 +8,9 @@ import { delayRoot } from './lambert';
  * v = ε sin(2π m (x − ½h)/L). Returns the comoving projection of v onto the
  * advected profile and its log-modulus.
  */
-function translating(mode: 'eulerian' | 'lagrangian', tau: number, steps: number, N = 48, m = 6, S = 2, U = 1.25) {
+function translating(mode: 'eulerian' | 'lagrangian', tau: number, steps: number, N = 48, m = 6, S = 2, U = 1.25, nu = 0) {
   const s = new FluidSolver(N, N, {
-    walls: 'periodic', viscosity: 0, vorticity: 0, kernel: 'cucker-smale', kernelStrength: S, kernelRange: 0.05,
+    walls: 'periodic', viscosity: nu, iterations: 60, delayLocal: false, vorticity: 0, kernel: 'cucker-smale', kernelStrength: S, kernelRange: 0.05,
     delaySelf: tau, delayNb: tau, delayMode: mode,
   });
   const g = s.grid, dt = s.params.dt;
@@ -84,6 +84,27 @@ describe('Lagrangian (comoving) delay', () => {
     expect(delayRoot(S * (1 - Kh), tau).re).toBeLessThan(-2);
     expect(slope(L, dt, 2)).toBeGreaterThan(0.1);
   }, 30000);
+
+  it('an undelayed viscosity ν regularises the Eulerian Doppler instability (μ + νk² = −a e^{−μt} e^{ik·Ut})', () => {
+    // m = 2: the Doppler phase per step k·U·Δt = π/12 is small, so the one-step
+    // timing ambiguity of the discrete delay does not matter; τ = 0.6 → φ = 3π,
+    // and the rest-fluid root (−0.73 /s) is stable: the growth is pure Doppler.
+    const tau = 0.6, N = 48, m = 2, U = 1.25;
+    const { Kh, S, dt, s } = translating('eulerian', tau, 1, N, m, 2, U);
+    const h = s.grid.h, k = (2 * Math.PI * m) / (N * h), kh2 = (4 / (h * h)) * Math.sin((k * h) / 2) ** 2;
+    const a = S * (1 - Kh), nuC = a / kh2; // cutoff: ν k_h² ≥ a can never grow
+    const g = (nu: number) => Math.log(1 + nu * kh2 * dt) / dt; // implicit-Euler damping rate
+    for (const f of [0, 0.5]) {
+      const nu = f * nuC, th = dopplerRoot(a, g(nu), tau, k * U * tau);
+      const { L } = translating('eulerian', tau, 480, N, m, 2, U, nu);
+      expect(delayRoot(a, tau).re).toBeLessThan(-0.5);
+      expect(th.re).toBeGreaterThan(0.3);
+      expect(Math.abs(slope(L, dt, 3) - th.re)).toBeLessThan(0.03);
+    }
+    const above = translating('eulerian', tau, 480, N, m, 2, U, 1.2 * nuC);
+    expect(dopplerRoot(a, g(1.2 * nuC), tau, k * U * tau).re).toBeLessThan(0);
+    expect(slope(above.L, dt, 2)).toBeLessThan(0);
+  }, 60000);
 
   it('at rest (linear regime) Lagrangian and Eulerian reads agree', () => {
     const run = (mode: 'eulerian' | 'lagrangian') => {
