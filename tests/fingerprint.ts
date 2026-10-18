@@ -18,9 +18,9 @@ export function hashFields(...fields: Float32Array[]): string {
 }
 
 /** Run a scripted scenario touching every operator and return its fingerprint. */
-export function wallScenario(walls: WallType): string {
+export function wallScenario(walls: WallType, extra: Record<string, unknown> = {}): string {
   const s = new FluidSolver(40, 28, {
-    walls, viscosity: 2e-4, diffusion: 1e-5, vorticity: 3, dyeDissipation: 0.1, iterations: 25,
+    walls, viscosity: 2e-4, diffusion: 1e-5, vorticity: 3, dyeDissipation: 0.1, iterations: 25, ...extra,
   });
   s.seedActiveTurbulence(7, 0.08);
   for (let n = 0; n < 60; n++) {

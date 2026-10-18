@@ -115,42 +115,40 @@
         </label>
         <label class="check" id="k-mt-row" title="Divide by the local kernel mass (only differs next to walls)"><input type="checkbox" id="k-mt" />
           Motsch–Tadmor normalisation</label>
-        <div class="subsection" id="k-delay-sub">
-          <h3>Delay</h3>
-          <h4>Calculation delay (own + neighbours)</h4>
-          <label class="slider" id="k-tcalc-row" title="Constant processing delay t_c applied to the point's own velocity and to every neighbour's">Calculation delay t<sub>c</sub> <output id="k-tcalc-out"></output>
-            <input type="range" id="k-tcalc" min="0" max="2" step="0.01" />
-          </label>
-          <p class="hint mono" id="k-regime"></p>
-          <h4>Interaction delay (signal speed)</h4>
-          <label class="check" id="k-delay-row" title="Toggle (D)"><input type="checkbox" id="k-delay" />
-            Finite interaction speed (adds r / v_int)</label>
-          <label class="slider" id="k-vint-row">Interaction speed v<sub>int</sub> <output id="k-vint-out"></output>
-            <input type="range" id="k-vint" min="-1.3" max="1.4" step="0.01" />
-          </label>
-          <label class="slider" id="k-shells-row" title="Radial shells with their own delay (+1 tail shell); cost ∝ shells on walled grids">Delay shells M <output id="k-shells-out"></output>
-            <input type="range" id="k-shells" min="2" max="16" step="1" />
-          </label>
-        </div>
         <canvas id="k-plot" width="240" height="80"></canvas>
-        <p class="hint mono" id="k-delay-info"></p>
         <p class="hint" id="k-note"></p>
         <button id="flocking" class="wide" title="Cucker–Smale + self-propulsion on periodic boundaries (F)">🐦 Flocking quick start</button>
-        <button id="delayed-flocking" class="wide" title="Flocking with a finite interaction speed v_int = 0.1 (L)">📡 Delayed flocking quick start</button>
-        <button id="delay-osc" class="wide" title="Calculation delay t_c = 0.42 s at S = 4 (S·t_c = 1.68 > π/2): the flow pattern oscillates (O)">〰️ Delay oscillations quick start</button>
         <p class="hint">Adds S∫K(|x−y|)(<b>u</b>(y) − <b>u</b>(x))dy to the local viscosity
           (∫K = 1, so S is a relaxation rate), or −ν_s(−Δ)<sup>s</sup><b>u</b>. Exact in Fourier
           space on periodic boundaries; with walls a zero-padded (non-wrapping) convolution.</p>
-        <p class="hint"><b>Finite interaction speed</b>: a point at distance r only feels
-          <b>u</b>(y, t − r/v<sub>int</sub>), the velocity y had when its signal left. Information
-          spreads no faster than v<sub>int</sub> (light cone; the short side is crossed in
-          1/v<sub>int</sub> s). Slider maximum = ∞ recovers the instantaneous kernel. Speeds in
-          domain units/s, like v₀.</p>
-        <p class="hint"><b>Calculation delay</b> t<sub>c</sub>: every point reacts to
-          <b>u</b>(y, t − t<sub>c</sub> − r/v<sub>int</sub>) − <b>u</b>(x, t − t<sub>c</sub>), i.e. its own
-          velocity is t<sub>c</sub> old too (processing / sensor latency). Beyond S·t<sub>c</sub> = π/2
-          the alignment over-corrects and the flow oscillates with growing amplitude; the HUD trace
-          (top left) shows the overlap with the initial flow swinging between + and −.</p>
+      </section>
+
+      <section>
+        <h2>Delays (own velocity vs neighbours)</h2>
+        <label class="slider" title="How old the point's OWN velocity is when it reacts">Own-velocity delay t<sub>self</sub> <output id="d-self-out"></output>
+          <input type="range" id="d-self" min="0" max="2" step="0.01" />
+        </label>
+        <label class="slider" title="How old the NEIGHBOURS' velocities are when they arrive">Neighbour delay t<sub>nb</sub> <output id="d-nb-out"></output>
+          <input type="range" id="d-nb" min="0" max="2" step="0.01" />
+        </label>
+        <label class="check" title="ν/h²[Σ_nb u(t − t_nb) − 4u(t − t_self)]"><input type="checkbox" id="d-local" />
+          Apply to local viscosity ν∇²<b>u</b></label>
+        <label class="check" title="S[(K*u)(t − t_nb) − c·u(t − t_self)]"><input type="checkbox" id="d-kernel" />
+          Apply to long-range term (kernel / fractional)</label>
+        <p class="hint mono" id="d-regime-local"></p>
+        <p class="hint mono" id="d-regime-kernel"></p>
+        <p class="hint mono" id="d-info"></p>
+        <button id="delay-osc" class="wide" title="Long-range alignment, t_self = t_nb = 0.42 s at S = 4 (S·t = 1.68 > π/2): the flow pattern oscillates (O)">〰️ Delay oscillations quick start</button>
+        <button id="local-delay" class="wide" title="Local viscosity only, t_self = 0.5 s, t_nb = 2 s, 4ν/h² = 2/s: large-scale oscillation (L)">🌊 Local viscosity delay quick start</button>
+        <button id="own-delay" class="wide" title="Long-range alignment with only the own velocity delayed: t_self = 0.42 s, t_nb = 0 (N)">🪞 Own-velocity delay quick start</button>
+        <p class="hint">Every viscosity term is split into what a point does with its <b>own</b>
+          velocity and what it does with its <b>neighbours'</b>, and each part can lag:</p>
+        <p class="hint mono">local: ν/h²[Σ<sub>nb</sub><b>u</b>(t − t<sub>nb</sub>) − 4<b>u</b>(x, t − t<sub>self</sub>)]<br />
+          kernel: S[(K*<b>u</b>)(x, t − t<sub>nb</sub>) − c(x)<b>u</b>(x, t − t<sub>self</sub>)]</p>
+        <p class="hint">Per Fourier mode this is û′ = −A û(t − t<sub>self</sub>) + B û(t − t<sub>nb</sub>);
+          the readouts above give its most unstable mode λ = growth ± i·frequency. An own delay
+          makes the term over-correct (oscillation); with t<sub>self</sub> = 0 it can never become
+          unstable. Both 0 = the instantaneous term (exact / implicit update). The dye is not delayed.</p>
       </section>
 
       <section>
@@ -216,41 +214,30 @@
           All of them conserve momentum on periodic boundaries and only ever remove kinetic
           energy. Combined with self-propulsion they give a Toner–Tu-like active "flock":
           the fluid moves at ≈ v₀ and the kernel aligns its direction over distance R.</p>
-        <p><b>Finite interaction speed</b> (optional, <i>retarded</i> alignment): signals travel
-          at speed v<sub>int</sub>, so the velocity received from distance r is r/v<sub>int</sub>
-          old:</p>
-        <div class="eq"><b>f</b><sub>K</sub>(x, t) = S ∫ K(r) (<b>u</b>(y, t − r/v<sub>int</sub>) − <b>u</b>(x, t)) dy,  r = |x − y|,  t<sub>del</sub> = r/v<sub>int</sub></div>
-        <p>as for the retarded potentials of electrodynamics, and as in delayed Cucker–Smale
-          models. The kernel is split into M equal-mass radial shells (plus a tail shell holding
-          the last 0.5 % of its mass); shell m uses the delay of its <i>outer</i> radius, so no
-          signal outruns v<sub>int</sub>. Past velocity fields are kept in a ring buffer (on the torus
-          as their Fourier spectra) and linearly interpolated in time, so the received field
-          is Σ<sub>m</sub> K<sub>m</sub> * <b>u</b>(t − τ<sub>m</sub>) + K(0)<b>u</b>(x, t), updated
-          semi-implicitly, <b>u</b> ← (<b>u</b> + SΔt·<b>w</b>)/(1 + SΔt·c), which is a convex combination of
-          present and past values and therefore stable for any Δt and v<sub>int</sub>.
-          v<sub>int</sub> → ∞ gives back the instantaneous kernel. Delays slow down (but do not
-          prevent) flocking. The total momentum lags behind, and only momentum plus the
-          "in-flight" part S Σ μ<sub>m</sub> ∫<sub>t−τ<sub>m</sub></sub><sup>t</sup> <b>u</b> ds is conserved.
-          Pressure still acts instantly (the fluid is incompressible), so the light cone
-          applies to the alignment interaction, not to the whole flow.</p>
-        <p><b>Calculation delay</b> (optional): a constant processing time t<sub>c</sub> that applies to
-          the point's <i>own</i> velocity as well as to its neighbours', on top of the interaction delay:</p>
-        <div class="eq"><b>f</b><sub>K</sub>(x, t) = S ∫ K(r) (<b>u</b>(y, t − t<sub>c</sub> − r/v<sub>int</sub>) − <b>u</b>(x, t − t<sub>c</sub>)) dy</div>
-        <p>Linearised per Fourier mode (v<sub>int</sub> = ∞) this is
-          û<sub>k</sub>′(t) = −a<sub>k</sub> û<sub>k</sub>(t − t<sub>c</sub>), a<sub>k</sub> = S(1 − K̂(k)),
-          with solutions e<sup>λt</sup>, λ = −a<sub>k</sub>e<sup>−λt<sub>c</sub></sup>, i.e.
-          λ = W₀(−a<sub>k</sub>t<sub>c</sub>)/t<sub>c</sub> (Lambert W). Regimes (Hayes 1950):
-          a<sub>k</sub>t<sub>c</sub> &lt; 1/e monotone decay; 1/e … π/2 damped oscillation;
-          &gt; π/2 growing oscillation, with frequency ω = a<sub>k</sub> at the threshold. Since
-          a<sub>k</sub> → S for short waves (K̂ → 0), the flow oscillates once S·t<sub>c</sub> &gt; π/2.
-          The uniform mode (k = 0) is never affected (the term vanishes for uniform flow). With a finite
-          v<sub>int</sub>: λ = −S e<sup>−λt<sub>c</sub></sup>(1 − K(0) − Σ<sub>m</sub> K̂<sub>m</sub>(k) e<sup>−λ r<sub>m</sub>/v<sub>int</sub></sup>).
-          With t<sub>c</sub> = 0 the own velocity is current and λ = −S + S K̂ e<sup>−λτ</sup> has only
-          stable roots: that is why the interaction delay alone only slows
-          flocking down. Numerically the update is explicit (the own velocity is in the past), with the
-          delayed right-hand side taken at the step midpoint: <b>u</b> ← <b>u</b> + SΔt(<b>w</b> − c<b>u</b><sub>d</sub>);
-          it needs S·Δt ≲ 1. A speed guard (|u| ≤ 10) keeps a run-away instability finite;
-          self-propulsion normally saturates it first.</p>
+        <p><b>Delays</b> (optional): each viscosity term is split into a <i>self</i> part, acting on the
+          point's own velocity, and a <i>neighbour</i> part, and the two are read at different times:</p>
+        <div class="eq">ν∇²<b>u</b> → (ν/h²)[Σ<sub>nb</sub> <b>u</b>(x<sub>nb</sub>, t − t<sub>nb</sub>) − 4 <b>u</b>(x, t − t<sub>self</sub>)]</div>
+        <div class="eq"><b>f</b><sub>K</sub> → S ∫ K(r) (<b>u</b>(y, t − t<sub>nb</sub>) − <b>u</b>(x, t − t<sub>self</sub>)) dy</div>
+        <p>(and −ν<sub>s</sub>(−Δ)<sup>s</sup> split into its diagonal G₀ = ⟨λ<sup>s</sup>⟩ and the rest). Linearised,
+          every Fourier mode obeys the two-delay equation
+          û′(t) = −A û(t − t<sub>self</sub>) + B û(t − t<sub>nb</sub>), with A = 4ν/h², B = A·(cos k<sub>x</sub>h + cos k<sub>y</sub>h)/2
+          for the local term and A = S, B = S·K̂(k) for a kernel; solutions e<sup>λt</sup> with
+          λ = −A e<sup>−λt<sub>self</sub></sup> + B e<sup>−λt<sub>nb</sub></sup> (Hayes 1950; Bellman &amp; Cooke 1963).
+          Special cases: t<sub>self</sub> = t<sub>nb</sub> = τ gives λ = W₀(−(A − B)τ)/τ (Lambert W) — monotone below
+          (A − B)τ = 1/e, damped oscillation up to π/2, growing oscillation beyond; t<sub>self</sub> = 0 is stable for
+          every t<sub>nb</sub> because |B| ≤ A; t<sub>nb</sub> = 0 lets long waves (B ≈ A) run away monotonically once
+          A·t<sub>self</sub> &gt; 1. For the local term B runs from +A (long waves) down to −A at the grid-scale
+          <i>checkerboard</i>, so with equal delays the checkerboard (rate 8ν/h²) goes unstable first, at
+          8ν t/h² = π/2: the delayed local viscosity has no short-wave cut-off other than the grid. On the torus
+          the total momentum obeys dM/dt = −A[M(t − t<sub>self</sub>) − M(t − t<sub>nb</sub>)]; it is conserved only for
+          equal delays (otherwise M + A∫<sub>t−t<sub>nb</sub></sub><sup>t−t<sub>self</sub></sup>M ds is). Numerically past fields
+          come from a ring buffer, read at the step midpoint; the update is explicit (local: sub-stepped to
+          νΔt/h² ≤ 0.2), or semi-implicit when t<sub>self</sub> = 0. A speed guard (|u| ≤ 10) keeps a run-away
+          finite; self-propulsion normally saturates it first.</p>
+        <p class="hint">References: Hayes, J. London Math. Soc. 25 (1950) 226; Bellman &amp; Cooke,
+          <i>Differential-Difference Equations</i> (1963); Erban, Haškovec &amp; Sun, SIAM J. Appl. Math. 76 (2016)
+          1535; Pignotti &amp; Trélat, Commun. Math. Sci. 16 (2018) 2053; Virágh et al., Bioinspir. Biomim. 9
+          (2014) 025012.</p>
         <p><b>Boundaries</b>: <i>no-slip</i> walls (fluid sticks to the walls, u = 0),
           <i>free-slip</i> walls (no flow through the walls, but it slides along them),
           <i>periodic</i> (a torus: whatever leaves on one side re-enters on the opposite
@@ -270,8 +257,8 @@
           becomes more diffusive).</p>
         <p>Shortcuts: <kbd>Space</kbd> pause, <kbd>S</kbd> step, <kbd>R</kbd> reset,
           <kbd>V</kbd> next view, <kbd>A</kbd> arrows, <kbd>B</kbd> next boundary, <kbd>P</kbd> self-propulsion,
-          <kbd>T</kbd> active-turbulence quick start, <kbd>K</kbd> next kernel, <kbd>F</kbd> flocking quick start, <kbd>D</kbd> finite interaction speed,
-          <kbd>L</kbd> delayed-flocking quick start, <kbd>O</kbd> delay-oscillations quick start, <kbd>H</kbd> hide panel.</p>
+          <kbd>T</kbd> active-turbulence quick start, <kbd>K</kbd> next kernel, <kbd>F</kbd> flocking quick start, <kbd>O</kbd> delay-oscillations quick start,
+          <kbd>L</kbd> local-viscosity-delay quick start, <kbd>N</kbd> own-velocity-delay quick start, <kbd>H</kbd> hide panel.</p>
       </details>
     </aside>
 

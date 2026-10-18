@@ -23,14 +23,14 @@ export interface Settings {
   kernelAlpha: number;
   kernelS: number;
   kernelMT: boolean;
-  /** Finite interaction speed (retarded kernel) on/off. */
-  kernelDelay: boolean;
-  /** Interaction speed v_int (domain units / s); Infinity = instantaneous. */
-  kernelVInt: number;
-  /** Number of radial delay shells. */
-  kernelShells: number;
-  /** Calculation delay t_c (s) of own and neighbour velocity; 0 = off. */
-  kernelCalcDelay: number;
+  /** Delay of the point's own velocity t_self (s) in the delayed viscosity terms. */
+  delaySelf: number;
+  /** Delay of the neighbours' velocities t_nb (s). */
+  delayNb: number;
+  /** Apply the delays to the local viscosity ν∇²u. */
+  delayLocal: boolean;
+  /** Apply the delays to the long-range kernel / fractional term. */
+  delayKernel: boolean;
   dt: number;
   iterations: number;
   /** Number of cells along the shorter side of the window. */
@@ -60,10 +60,10 @@ export const defaultSettings: Settings = {
   kernelAlpha: 3,
   kernelS: 0.5,
   kernelMT: false,
-  kernelDelay: false,
-  kernelVInt: 1,
-  kernelShells: 8,
-  kernelCalcDelay: 0,
+  delaySelf: 0,
+  delayNb: 0,
+  delayLocal: true,
+  delayKernel: true,
   dt: 1 / 60,
   iterations: 20,
   resolution: 128,

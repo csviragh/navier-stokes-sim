@@ -409,6 +409,62 @@ function diffuseVPeriodic(
 }
 
 // ---------------------------------------------------------------------------
+// Delayed local viscosity: neighbour / self split of the 5-point Laplacian
+// ---------------------------------------------------------------------------
+
+/*
+ * ν∇²_h u = (ν/h²)[Σ_nb u_nb − 4 u] is split into its neighbour sum and its
+ * diagonal so the two can be read at different times. The neighbour sum uses
+ * exactly the stencil of the implicit diffusion above (diffuseU / diffuseV and
+ * their periodic variants): wall faces (u = 0 normal faces), the ghost rows /
+ * columns of the tangential condition (−u for no-slip, +u for free-slip, i.e.
+ * the wall "reflection" of the neighbour field) and wrap-around neighbours on
+ * periodic axes. `nb` must have consistent ghosts (fields stored after
+ * set*Boundary, or time interpolations of such fields). Only unknown faces of
+ * `out` are written.
+ */
+
+/** Σ_nb of u-faces (unknowns i = 1..uLastI, j = 1..ny) into out. */
+export function neighbourSumU(g: Grid, nb: ArrayLike<number>, out: Float64Array, walls: WallType): void {
+  const { nx, ny, uStride: s } = g;
+  const px = periodicX(walls);
+  const py = periodicY(walls);
+  const iLast = uLastI(g, walls);
+  const wy = (ny - 1) * s;
+  for (let j = 1; j <= ny; j++) {
+    const r = j * s;
+    for (let i = 1; i <= iLast; i++) {
+      const k = r + i;
+      const left = i > 1 ? nb[k - 1] : px ? nb[r + nx] : nb[k - 1];
+      const right = i < nx ? nb[k + 1] : nb[r + 1];
+      const down = py && j === 1 ? nb[k + wy] : nb[k - s];
+      const up = py && j === ny ? nb[k - wy] : nb[k + s];
+      out[k] = left + right + down + up;
+    }
+  }
+}
+
+/** Σ_nb of v-faces (unknowns i = 1..nx, j = 1..vLastJ) into out. */
+export function neighbourSumV(g: Grid, nb: ArrayLike<number>, out: Float64Array, walls: WallType): void {
+  const { nx, ny, vStride: s } = g;
+  const px = periodicX(walls);
+  const py = periodicY(walls);
+  const jLast = vLastJ(g, walls);
+  const wx = nx - 1;
+  for (let j = 1; j <= jLast; j++) {
+    const r = j * s;
+    for (let i = 1; i <= nx; i++) {
+      const k = r + i;
+      const left = px && i === 1 ? nb[k + wx] : nb[k - 1];
+      const right = px && i === nx ? nb[k - wx] : nb[k + 1];
+      const down = j > 1 ? nb[k - s] : py ? nb[ny * s + i] : nb[k - s];
+      const up = j < ny ? nb[k + s] : nb[s + i];
+      out[k] = left + right + down + up;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Semi-Lagrangian advection
 // ---------------------------------------------------------------------------
 

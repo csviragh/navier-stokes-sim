@@ -32,6 +32,8 @@
  *     combination of old values, so it obeys a max principle for any Δt.
  *   fractional: periodic only (exact multiplier exp(−ν_s λ^s Δt)); on walled
  *     domains it is disabled (no-op).
+ *   delayed (t_self, t_nb not both 0): explicit / semi-implicit update with the
+ *     neighbours' and the own velocity read from the past, see applyDelayed().
  */
 import { FFT } from './fft';
 
@@ -74,12 +76,6 @@ export class NonlocalOperator {
   readonly fullyPeriodic: boolean;
   private readonly f1: FFT;
   private readonly f2: FFT;
-  /** Shell decompositions for the retarded (finite-speed) operator, keyed by shell count. */
-  private shellCache = new Map<number, ShellSet>();
-  private wre?: Float64Array;
-  private wim?: Float64Array;
-  /** Diagnostics of the last retarded apply: (age of interpolated time, weight) per tap. */
-  lastTaps: { age: number; weight: number }[] = [];
   /** Fourier symbol: K̂ (conv, K̂(0) = 1) or λ^s (fractional). */
   private readonly sym: Float64Array;
   private readonly re: Float64Array;
@@ -219,456 +215,84 @@ export class NonlocalOperator {
   }
 
   /**
-   * Radial shell decomposition of the (normalised) kernel for the retarded
-   * operator: K = K_self·δ + Σ_m K_m + K_tail, where
-   *   K_self  the r = 0 offset (no delay: a point always knows its own velocity),
-   *   K_m     offsets with r ∈ (r_m, r_{m+1}], m = 0 … M−1, equal-mass shells:
-   *           r_{m+1} encloses (m+1)/M of the non-self mass inside R_cut,
-   *   K_tail  offsets with r > R_cut (the last `1 − massFraction` of the mass),
-   * R_cut = smallest radius enclosing `massFraction` of ∫K. Each shell gets the
-   * delay of its OUTER radius (r_out/v_int), so no part of the kernel ever
-   * receives information faster than v_int; the tail's outer radius is the
-   * radius beyond which less than 1e-12 of the mass remains.
-   * Shell spectra K̂_m are cached per shell count.
+   * Delayed explicit update with separate delays for the neighbours' and the
+   * point's own velocity (two-delay alignment, see fluid.ts):
+   *
+   *   conv:        f = S [ (K * u_nb)(x) − c(x) u_self(x) ]        (c ≡ 1 on the torus)
+   *   fractional:  f = ν_s [ (N * u_nb)(x) − G₀ u_self(x) ],  N̂(k) = G₀ − λ(k)^s, G₀ = ⟨λ^s⟩
+   *
+   * (the fractional operator −ν_s(−Δ)^s split into its diagonal G₀ and its
+   * off-diagonal, long-range part; periodic only). u_nb = u(·, t − t_nb) and
+   * u_self = u(·, t − t_self) are supplied by the caller (history reads at the
+   * step midpoint), `getCur` is the current field. Update:
+   *   explicit (t_self > 0):  u ← u + a (w − c u_self),  a = S Δt  [Motsch–Tadmor: a = S Δt / c]
+   *   semi-implicit (t_self = 0, own velocity current): u ← (u + a w) / (1 + a c),
+   *     a convex combination of present and past values (max principle, any Δt).
    */
-  shells(M: number, massFraction = 0.995): ShellSet {
-    M = Math.max(1, Math.round(M));
-    const hit = this.shellCache.get(M);
-    if (hit && hit.massFraction === massFraction) return hit;
-    const { A, B, n1, n2, p1, p2, h, params, re, im } = this;
-    if (params.kernel === 'fractional' || params.kernel === 'none') throw new Error('shells: convolution kernels only');
-    const off = (d: number, n: number, m: number, per: boolean): number => {
-      if (per) return Math.min(d, n - d);
-      if (d <= n - 1) return d;
-      if (d >= m - (n - 1)) return m - d;
-      return -1;
-    };
-    // identical sampling / normalisation as the constructor
-    const val = new Float64Array(A * B);
-    const dist = new Float64Array(A * B).fill(-1);
-    let sum = 0;
-    for (let b = 0; b < B; b++) {
-      const db = off(b, n2, B, p2);
-      for (let a = 0; a < A; a++) {
-        const da = off(a, n1, A, p1);
-        const k = a + A * b;
-        if (da < 0 || db < 0) continue;
-        const r = h * Math.hypot(da, db);
-        const v = kernelProfile(params, r);
-        val[k] = v;
-        dist[k] = r;
-        sum += v;
-      }
-    }
-    for (let k = 0; k < val.length; k++) val[k] /= sum;
-    const selfWeight = val[0];
-    // R_cut (mass fraction) and the 1e-12 tail radius, from offsets sorted by distance
-    const order: number[] = [];
-    for (let k = 1; k < val.length; k++) if (dist[k] > 0 && val[k] > 0) order.push(k);
-    order.sort((x, y) => dist[x] - dist[y]);
-    let cum = selfWeight, rCut = h;
-    for (const k of order) { cum += val[k]; if (cum >= massFraction) { rCut = dist[k]; break; } }
-    if (order.length) rCut = Math.min(Math.max(rCut, h), dist[order[order.length - 1]]);
-    let beyond = 0, rTail = rCut;
-    for (let q = order.length - 1; q >= 0; q--) {
-      beyond += val[order[q]];
-      if (beyond >= 1e-12) { rTail = Math.max(rCut, dist[order[q]]); break; }
-    }
-    // equal-mass shells: edge m+1 encloses (m+1)/M of the (non-self) mass inside R_cut
-    const n = M + 1; // regular shells + tail
-    const rOuter = new Float64Array(n);
-    let inside = 0;
-    for (const k of order) { if (dist[k] > rCut) break; inside += val[k]; }
-    {
-      let acc = 0, m = 0;
-      for (const k of order) {
-        if (dist[k] > rCut || m >= M - 1) break;
-        acc += val[k];
-        while (m < M - 1 && acc >= ((m + 1) / M) * inside * (1 - 1e-12)) rOuter[m++] = dist[k];
-      }
-      for (; m < M; m++) rOuter[m] = rCut;
-    }
-    rOuter[M] = rTail;
-    const dr = rCut / M;
-    const shellOf = (r: number) => {
-      if (r > rCut * (1 + 1e-12)) return M;
-      let m = 0;
-      while (m < M - 1 && r > rOuter[m] * (1 + 1e-12)) m++;
-      return m;
-    };
-    const mass = new Float64Array(n);
-    const sym: Float64Array[] = [];
-    const real: Float64Array[] = [];
-    for (let m = 0; m < n; m++) { sym.push(new Float64Array(A * B)); real.push(new Float64Array(A * B)); }
-    for (const k of order) { const m = shellOf(dist[k]); real[m][k] = val[k]; mass[m] += val[k]; }
-    for (let m = 0; m < n; m++) {
-      if (!(mass[m] > 0)) continue;
-      re.set(real[m]); im.fill(0);
-      this.fft2(true, B);
-      sym[m].set(re);
-    }
-    const set: ShellSet = {
-      M, massFraction, rCut, rTail, dr, rOuter, mass, sym, selfWeight,
-      real: real.map((r) => r), // real-space shell kernels (tests)
-      full: val,
-    };
-    this.shellCache.set(M, set);
-    return set;
-  }
-
-  /**
-   * Retarded (finite interaction speed) alignment over one step at simulation
-   * time t:
-   *   w(x) = K_self u(x,t) + Σ_m (K_m * u(·, t − τ_m))(x),   τ_m = r_out,m / v_int
-   *   u_new = (u + a·w) / (1 + a·c),   a = S Δt  [Motsch–Tadmor: a = S Δt / c]
-   * The past fields u(·, t − τ) are linearly interpolated in time from `hist`
-   * (missing history → the oldest stored frame, or the current field). The
-   * current field is pushed into `hist` afterwards. Periodic sub-grids store
-   * the spectra of the frames (one FFT per stored frame), walled ones the
-   * real fields (one FFT per shell and step).
-   */
-  applyRetarded(
-    get: (i: number, j: number) => number, set: (i: number, j: number, x: number) => void,
-    dt: number, t: number, vInt: number, M: number, hist: DelayHistory, budgetBytes = 32 * 2 ** 20,
-  ): void {
-    const { n1, n2, A, B, re, im, params } = this;
-    const S = params.strength;
-    this.lastTaps = [];
-    if (!(S > 0) || !(dt > 0)) return;
-    if (params.kernel === 'fractional') { this.apply(get, set, dt); return; }
-    const sh = this.shells(M);
-    const periodic = this.fullyPeriodic;
-    const nSh = sh.rOuter.length;
-    const tau = new Float64Array(nSh);
-    let tauMax = 0;
-    for (let m = 0; m < nSh; m++) {
-      tau[m] = sh.rOuter[m] / vInt;
-      if (sh.mass[m] > 0) tauMax = Math.max(tauMax, tau[m]);
-    }
-    hist.configure(periodic, periodic ? A * B : n1 * n2, dt, tauMax, budgetBytes);
-    this.load(get);
-    const old = new Float64Array(n1 * n2);
-    for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) old[i + n1 * j] = re[i + A * j];
-    const wre = (this.wre ??= new Float64Array(A * B));
-    const wim = (this.wim ??= new Float64Array(A * B));
-    wre.fill(0); wim.fill(0);
-    const frames = hist.frames;
-    const taps = this.lastTaps;
-    if (periodic) {
-      this.fft2(true, n2); // re/im = spectrum of the current field
-      for (let m = 0; m < nSh; m++) {
-        if (!(sh.mass[m] > 0)) continue;
-        const { a, b, theta } = hist.lookup(t - tau[m], t);
-        const K = sh.sym[m];
-        const wa = 1 - theta, wb = theta;
-        taps.push({ age: a < 0 ? 0 : t - frames[a].t, weight: sh.mass[m] * wa });
-        if (wb > 0) taps.push({ age: b < 0 ? 0 : t - frames[b].t, weight: sh.mass[m] * wb });
-        const Ar = a < 0 ? re : frames[a].re, Ai = a < 0 ? im : frames[a].im!;
-        if (wb > 0) {
-          const Br = b < 0 ? re : frames[b].re, Bi = b < 0 ? im : frames[b].im!;
-          for (let k = 0; k < wre.length; k++) {
-            const kk = K[k];
-            wre[k] += kk * (wa * Ar[k] + wb * Br[k]);
-            wim[k] += kk * (wa * Ai[k] + wb * Bi[k]);
-          }
-        } else {
-          for (let k = 0; k < wre.length; k++) { wre[k] += K[k] * Ar[k]; wim[k] += K[k] * Ai[k]; }
-        }
-      }
-      if (hist.wants(t)) { const f = hist.push(t); f.re.set(re); f.im!.set(im); }
-      re.set(wre); im.set(wim);
-      this.fft2(false, n2);
-    } else {
-      // group shells that read the same (frames, weight) so each distinct
-      // delayed field is transformed once
-      const groups = new Map<string, { a: number; b: number; theta: number; ms: number[] }>();
-      for (let m = 0; m < nSh; m++) {
-        if (!(sh.mass[m] > 0)) continue;
-        const l = hist.lookup(t - tau[m], t);
-        const key = `${l.a}|${l.b}|${l.theta}`;
-        const g = groups.get(key);
-        if (g) g.ms.push(m); else groups.set(key, { ...l, ms: [m] });
-        taps.push({ age: l.a < 0 ? 0 : t - frames[l.a].t, weight: sh.mass[m] * (1 - l.theta) });
-        if (l.theta > 0) taps.push({ age: l.b < 0 ? 0 : t - frames[l.b].t, weight: sh.mass[m] * l.theta });
-      }
-      for (const g of groups.values()) {
-        const fa = g.a < 0 ? null : frames[g.a].re, fb = g.b < 0 ? null : frames[g.b].re;
-        const wa = 1 - g.theta, wb = g.theta;
-        re.fill(0); im.fill(0);
-        for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) {
-          const q = i + n1 * j;
-          const va = fa ? fa[q] : old[q];
-          re[i + A * j] = wb > 0 ? wa * va + wb * (fb ? fb[q] : old[q]) : va;
-        }
-        this.fft2(true, n2);
-        for (let k = 0; k < wre.length; k++) {
-          let kk = 0;
-          for (const m of g.ms) kk += sh.sym[m][k];
-          wre[k] += kk * re[k];
-          wim[k] += kk * im[k];
-        }
-      }
-      if (hist.wants(t)) { const f = hist.push(t); for (let q = 0; q < old.length; q++) f.re[q] = old[q]; }
-      re.set(wre); im.set(wim);
-      this.fft2(false, n2);
-    }
-    taps.push({ age: 0, weight: sh.selfWeight });
-    const c = this.c;
-    for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) {
-      const q = i + n1 * j;
-      const w = re[i + A * j] + sh.selfWeight * old[q];
-      const ci = periodic ? 1 : c![q];
-      const a = params.motschTadmor && !periodic ? (S * dt) / ci : S * dt;
-      set(i, j, (old[q] + a * w) / (1 + a * ci));
-    }
-    hist.prune(t + dt);
-    void B;
-  }
-
-  /**
-   * Alignment with a calculation (processing) delay t_c on top of the optional
-   * finite interaction speed:
-   *   f(x,t) = S ∫ K(r) ( u(y, t − t_c − r/v_int) − u(x, t − t_c) ) dy
-   * Both the neighbours' and the point's OWN velocity are t_c old, so the
-   * update cannot be implicit in u; it is explicit, with the delayed right-hand
-   * side evaluated at the step midpoint (second order in Δt):
-   *   u_new = u + a · ( w − c·u_d ),   a = S Δt  [Motsch–Tadmor: a = S Δt / c]
-   *   u_d   = u(x, t + Δt/2 − t_c),   w = Σ_taps K_tap * u(·, t + Δt/2 − t_c − τ_tap)
-   * (lookups later than t use the current field, so 0 < t_c < Δt/2 degrades
-   * smoothly to explicit Euler). With v_int = ∞ all shells collapse into one
-   * tap: w − u_d = (K̂ − 1)·û(t + Δt/2 − t_c), a single convolution. Otherwise
-   * the shells of shells(M) are used (self offset delayed by t_c only).
-   * Explicit: the undelayed limit needs a·max(1 − K̂) < 2, i.e. S Δt ≲ 1.
-   * The current field is pushed into `hist` afterwards.
-   */
-  applyCalcDelayed(
-    get: (i: number, j: number) => number, set: (i: number, j: number, x: number) => void,
-    dt: number, t: number, tCalc: number, vInt: number, M: number, hist: DelayHistory,
-    budgetBytes = 32 * 2 ** 20,
+  applyDelayed(
+    getNb: (i: number, j: number) => number,
+    getSelf: ((i: number, j: number) => number) | null,
+    getCur: (i: number, j: number) => number,
+    set: (i: number, j: number, x: number) => void,
+    dt: number,
   ): void {
     const { n1, n2, A, re, im, params } = this;
     const S = params.strength;
-    this.lastTaps = [];
     if (!(S > 0) || !(dt > 0)) return;
-    if (params.kernel === 'fractional' || params.kernel === 'none') return;
-    const periodic = this.fullyPeriodic;
-    const finite = Number.isFinite(vInt) && vInt > 0;
-    // taps: (Fourier symbol, delay); the own-velocity term is handled separately
-    const taps: { sym: Float64Array; d: number; mass: number }[] = [];
-    let selfW = 0; // weight of terms that read u(x, t − t_c) in real space (walled)
-    if (finite) {
-      const sh = this.shells(M);
-      for (let m = 0; m < sh.rOuter.length; m++)
-        if (sh.mass[m] > 0) taps.push({ sym: sh.sym[m], d: tCalc + sh.rOuter[m] / vInt, mass: sh.mass[m] });
-      selfW = sh.selfWeight;
-    } else {
-      taps.push({ sym: this.sym, d: tCalc, mass: 1 });
-    }
-    let tauMax = tCalc;
-    for (const tp of taps) tauMax = Math.max(tauMax, tp.d);
-    hist.configure(periodic, periodic ? A * this.B : n1 * n2, dt, tauMax, budgetBytes);
-    this.load(get);
-    const old = new Float64Array(n1 * n2);
-    for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) old[i + n1 * j] = re[i + A * j];
-    const wre = (this.wre ??= new Float64Array(A * this.B));
-    const wim = (this.wim ??= new Float64Array(A * this.B));
-    wre.fill(0); wim.fill(0);
-    const frames = hist.frames;
-    const tapLog = this.lastTaps;
-    const tMid = t + 0.5 * dt;
-    const look = (d: number) => hist.lookup(Math.min(t, tMid - d), t);
-    const logTap = (l: { a: number; b: number; theta: number }, wgt: number) => {
-      tapLog.push({ age: l.a < 0 ? 0 : t - frames[l.a].t, weight: wgt * (1 - l.theta) });
-      if (l.theta > 0) tapLog.push({ age: l.b < 0 ? 0 : t - frames[l.b].t, weight: wgt * l.theta });
-    };
-    // own delayed velocity u_d (real space, all cases: needed for c·u_d and the self offset)
-    const ud = new Float64Array(n1 * n2);
-    if (periodic) {
-      this.fft2(true, n2); // re/im = spectrum of the current field
-      const cre = Float64Array.from(re), cim = Float64Array.from(im);
-      const spec = (k: number) => (k < 0 ? [cre, cim] : [frames[k].re, frames[k].im!]) as [ArrayLike<number>, ArrayLike<number>];
-      const accum = (K: Float64Array | null, coef: number, l: { a: number; b: number; theta: number }) => {
-        const [Ar, Ai] = spec(l.a);
-        const wa = 1 - l.theta, wb = l.theta;
-        const [Br, Bi] = wb > 0 ? spec(l.b) : [Ar, Ai];
-        for (let k = 0; k < wre.length; k++) {
-          const kk = K ? K[k] + coef : coef;
-          if (kk === 0) continue;
-          wre[k] += kk * (wa * Ar[k] + wb * Br[k]);
-          wim[k] += kk * (wa * Ai[k] + wb * Bi[k]);
-        }
-      };
-      const lSelf = look(tCalc);
-      if (!finite) {
-        // single tap: (K̂ − 1) · û(t + Δt/2 − t_c)
-        accum(this.sym, -1, lSelf);
-        logTap(lSelf, 1);
-      } else {
-        for (const tp of taps) { const l = look(tp.d); accum(tp.sym, 0, l); logTap(l, tp.mass); }
-        accum(null, selfW - 1, lSelf);
-        logTap(lSelf, selfW);
-      }
-      if (hist.wants(t)) { const f = hist.push(t); f.re.set(cre); f.im!.set(cim); }
-      re.set(wre); im.set(wim);
-      this.fft2(false, n2); // re = w − u_d
-      for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) {
-        const q = i + n1 * j;
-        set(i, j, old[q] + S * dt * re[i + A * j]);
-      }
-      hist.prune(t + dt);
-      return;
-    }
-    // walled: real-space frames; group taps by identical (frames, weight)
-    const field = (l: { a: number; b: number; theta: number }, out: Float64Array) => {
-      const fa = l.a < 0 ? null : frames[l.a].re, fb = l.b < 0 ? null : frames[l.b].re;
-      const wa = 1 - l.theta, wb = l.theta;
-      for (let q = 0; q < out.length; q++) {
-        const va = fa ? fa[q] : old[q];
-        out[q] = wb > 0 ? wa * va + wb * (fb ? fb[q] : old[q]) : va;
-      }
-    };
-    const lSelf = look(tCalc);
-    field(lSelf, ud);
-    const groups = new Map<string, { l: { a: number; b: number; theta: number }; syms: Float64Array[] }>();
-    for (const tp of taps) {
-      const l = look(tp.d);
-      const key = `${l.a}|${l.b}|${l.theta}`;
-      const g = groups.get(key);
-      if (g) g.syms.push(tp.sym); else groups.set(key, { l, syms: [tp.sym] });
-      logTap(l, tp.mass);
-    }
-    if (finite) logTap(lSelf, selfW);
-    const tmp = new Float64Array(n1 * n2);
-    for (const g of groups.values()) {
-      field(g.l, tmp);
-      re.fill(0); im.fill(0);
-      for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) re[i + A * j] = tmp[i + n1 * j];
+    const fractional = params.kernel === 'fractional';
+    if (params.kernel === 'none' || (fractional && !this.fullyPeriodic)) return;
+    this.load(getNb);
+    if (fractional) {
+      const G0 = this.diagonal();
       this.fft2(true, n2);
-      for (let k = 0; k < wre.length; k++) {
-        let kk = 0;
-        for (const y of g.syms) kk += y[k];
-        wre[k] += kk * re[k];
-        wim[k] += kk * im[k];
-      }
-    }
-    if (hist.wants(t)) { const f = hist.push(t); for (let q = 0; q < old.length; q++) f.re[q] = old[q]; }
-    re.set(wre); im.set(wim);
-    this.fft2(false, n2);
-    const c = this.c!;
+      const sym = this.sym;
+      for (let k = 0; k < re.length; k++) { const m = G0 - sym[k]; re[k] *= m; im[k] *= m; }
+      this.fft2(false, n2);
+    } else this.convolveLoaded();
+    const periodic = this.fullyPeriodic;
+    const c = this.c;
     for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) {
-      const q = i + n1 * j;
-      const w = re[i + A * j] + selfW * ud[q];
-      const ci = c[q];
-      const a = params.motschTadmor ? (S * dt) / ci : S * dt;
-      set(i, j, old[q] + a * (w - ci * ud[q]));
+      const w = re[i + A * j];
+      const ci = fractional ? this.diagonal() : periodic ? 1 : c![i + n1 * j];
+      const a = !fractional && !periodic && params.motschTadmor ? (S * dt) / ci : S * dt;
+      const cur = getCur(i, j);
+      set(i, j, getSelf ? cur + a * (w - ci * getSelf(i, j)) : (cur + a * w) / (1 + a * ci));
     }
-    hist.prune(t + dt);
+  }
+
+  private diag = NaN;
+  /**
+   * Diagonal (self) weight of the operator: 1 for normalised convolution
+   * kernels on the torus (c(x) ≤ 1 with walls), G₀ = mean of λ(k)^s over all
+   * modes for the fractional Laplacian (its real-space kernel at r = 0).
+   */
+  diagonal(): number {
+    if (this.params.kernel !== 'fractional') return 1;
+    if (Number.isNaN(this.diag)) {
+      let s = 0;
+      for (let k = 0; k < this.sym.length; k++) s += this.sym[k];
+      this.diag = s / this.sym.length;
+    }
+    return this.diag;
+  }
+
+  /**
+   * Range of the neighbour/self coefficient ratio q = B/A over the non-uniform
+   * modes (k ≠ 0), for the stability scan: conv kernels q = K̂(k) (A = S),
+   * fractional q = 1 − λ(k)^s/G₀ (A = ν_s G₀).
+   */
+  modeRatioRange(): [number, number] {
+    let lo = Infinity, hi = -Infinity;
+    const frac = this.params.kernel === 'fractional';
+    const G0 = this.diagonal();
+    for (let k = 1; k < this.sym.length; k++) {
+      const q = frac ? 1 - this.sym[k] / G0 : this.sym[k];
+      if (q < lo) lo = q;
+      if (q > hi) hi = q;
+    }
+    return [lo, Math.min(hi, 1)];
   }
 
   /** Fourier symbol at index (a, b) (testing / plotting). */
   symbol(a: number, b: number): number { return this.sym[a + this.A * b]; }
-}
-
-/** Radial shell decomposition of a kernel (see NonlocalOperator.shells). */
-export interface ShellSet {
-  /** Number of regular shells (a tail shell is appended). */
-  M: number;
-  massFraction: number;
-  /** Radius enclosing `massFraction` of the kernel mass (domain units). */
-  rCut: number;
-  /** Outer radius of the tail shell (less than 1e-12 of the mass lies beyond). */
-  rTail: number;
-  /** Mean shell width R_cut / M (shells are equal-mass, not equal-width). */
-  dr: number;
-  /** Outer radius of each shell (M regular + tail); its delay is rOuter / v_int. */
-  rOuter: Float64Array;
-  /** Kernel mass Σ K_m h² of each shell (Σ mass + selfWeight = 1). */
-  mass: Float64Array;
-  /** Fourier symbols K̂_m. */
-  sym: Float64Array[];
-  /** Real-space shell kernels K_m (offset layout of the operator). */
-  real: Float64Array[];
-  /** The full normalised kernel (same layout). */
-  full: Float64Array;
-  /** Weight of the r = 0 offset (never delayed). */
-  selfWeight: number;
-}
-
-interface Frame { t: number; re: Float32Array; im: Float32Array | null }
-
-/**
- * Ring buffer of past velocity fields (one sub-grid component), time-stamped
- * with simulation time. Periodic sub-grids store complex spectra, walled ones
- * real fields, both as Float32. Frames are recorded at most every `interval`
- * seconds (= Δt unless the memory budget forces coarser sampling) and kept
- * only as long as the longest delay needs them.
- */
-export class DelayHistory {
-  frames: Frame[] = [];
-  private pool: Frame[] = [];
-  private len = 0;
-  private complex = false;
-  interval = 0;
-  capacity = 0;
-  tauMax = 0;
-  static readonly MAX_FRAMES = 512;
-
-  configure(complex: boolean, len: number, dt: number, tauMax: number, budgetBytes: number): void {
-    if (complex !== this.complex || len !== this.len) { this.clear(); this.pool = []; }
-    this.complex = complex;
-    this.len = len;
-    this.tauMax = tauMax;
-    const fb = this.frameBytes();
-    this.capacity = Math.max(3, Math.min(DelayHistory.MAX_FRAMES, Math.floor(budgetBytes / fb)));
-    // capacity − 2 intervals must cover τ_max (one extra frame brackets it)
-    this.interval = Math.max(dt, tauMax / (this.capacity - 2));
-    while (this.frames.length > this.capacity) this.pool.push(this.frames.shift()!);
-  }
-
-  frameBytes(): number { return 4 * this.len * (this.complex ? 2 : 1); }
-  bytes(): number { return this.frames.length * this.frameBytes(); }
-  clear(): void { this.pool.push(...this.frames); this.frames = []; }
-
-  /** Should the field at time t be recorded? */
-  wants(t: number): boolean {
-    const f = this.frames;
-    return f.length === 0 || t - f[f.length - 1].t >= this.interval * (1 - 1e-9);
-  }
-
-  push(t: number): Frame {
-    let f = this.pool.pop();
-    if (!f || f.re.length !== this.len || (this.complex !== (f.im !== null))) {
-      f = { t, re: new Float32Array(this.len), im: this.complex ? new Float32Array(this.len) : null };
-    }
-    f.t = t;
-    this.frames.push(f);
-    while (this.frames.length > this.capacity) this.pool.push(this.frames.shift()!);
-    return f;
-  }
-
-  /** Drop frames no lookup at time ≥ tNext can need. */
-  prune(tNext: number): void {
-    const f = this.frames;
-    while (f.length >= 2 && f[1].t <= tNext - this.tauMax) this.pool.push(f.shift()!);
-  }
-
-  /**
-   * Interpolation weights for the field at time T, given the current field at
-   * time `now` (index −1): value = (1 − θ)·F[a] + θ·F[b]. T ≥ now → current
-   * field; T before the oldest frame → the oldest frame (start-up).
-   */
-  lookup(T: number, now: number): { a: number; b: number; theta: number } {
-    const f = this.frames;
-    if (T >= now || f.length === 0) return { a: -1, b: -1, theta: 0 };
-    if (T <= f[0].t) return { a: 0, b: 0, theta: 0 };
-    let lo = 0, hi = f.length; // find last frame with t ≤ T
-    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (f[mid].t <= T) lo = mid; else hi = mid; }
-    const ta = f[lo].t;
-    const b = lo + 1 < f.length ? lo + 1 : -1;
-    const tb = b < 0 ? now : f[b].t;
-    const theta = tb > ta ? (T - ta) / (tb - ta) : 0;
-    if (theta <= 0) return { a: lo, b: lo, theta: 0 };
-    if (theta >= 1) return { a: b, b, theta: 0 };
-    return { a: lo, b, theta };
-  }
 }

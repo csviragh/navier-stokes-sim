@@ -11,7 +11,9 @@
  *   1. forces (vorticity confinement; user impulses are applied via splat())
  *   2. implicit viscous diffusion, then the optional nonlocal (long-range)
  *      viscosity / alignment kernel S∫K(|x−y|)(u(y)−u(x))dy or −ν_s(−Δ)^s u
- *      (see kernels.ts)
+ *      (see kernels.ts). With delays (t_self, t_nb) either term reads the
+ *      point's own velocity t_self ago and its neighbours' velocities t_nb ago
+ *      (explicit update from a history of past fields, see applyDelayedViscosity)
  *   3. projection (Poisson solve for p, subtract ∇p)
  *   4. semi-Lagrangian self-advection (RK2 back-trace, bilinear interpolation)
  *   5. optional self-propulsion (active fluid): exact relaxation of the local
@@ -29,9 +31,11 @@ import {
   advectScalar, advectVelocity, cellVelocity, computeDivergence, computeVorticity,
   diffuseScalar, diffuseU, diffuseV, project, sampleCell, sampleU, sampleV,
   selfPropulsion, setScalarBoundary, setUBoundary, setVBoundary, uLastI, vLastJ,
-  vorticityConfinement,
+  vorticityConfinement, neighbourSumU, neighbourSumV,
 } from './ops';
-import { DelayHistory, NonlocalOperator, type KernelParams, type KernelType } from './kernels';
+import { NonlocalOperator, type KernelParams, type KernelType } from './kernels';
+import { FieldHistory } from './delay';
+import { scanModes, type ModeScan } from './stability';
 
 export interface FluidParams {
   /** Kinematic viscosity ν (domain units² / s; the shorter side has length 1). */
@@ -77,23 +81,19 @@ export interface FluidParams {
   /** Motsch–Tadmor local normalisation (only differs from the default next to walls). */
   kernelMT: boolean;
   /**
-   * Finite interaction speed (retarded kernel): the received field is
-   * K * u(·, t − r/v_int) instead of K * u(·, t). Off by default; ignored for
-   * 'fractional' and 'none'.
+   * Delay of the point's OWN velocity t_self (s) in the viscosity terms it is
+   * enabled for (delayLocal / delayKernel):
+   *   local:      ν/h² [ Σ_nb u_nb(t − t_nb) − 4 u(x, t − t_self) ]
+   *   long-range: S [ (K * u)(x, t − t_nb) − c(x) u(x, t − t_self) ]
+   * t_self = t_nb = 0: no delay (the previous exact / implicit updates, bit-identical).
    */
-  kernelDelay: boolean;
-  /** Interaction (signal) speed v_int in domain units / s; ∞ = instantaneous. */
-  kernelVInt: number;
-  /** Number of radial delay shells M (plus one tail shell). */
-  kernelShells: number;
-  /**
-   * Calculation (processing) delay t_c (s), applied to BOTH the neighbours'
-   * and the point's own velocity:
-   *   f = S ∫ K(r) (u(y, t − t_c − r/v_int) − u(x, t − t_c)) dy.
-   * 0 = off (the 6a8ab36 behaviour, bit-identical). Works with or without the
-   * finite interaction speed. Convolution kernels only.
-   */
-  kernelCalcDelay: number;
+  delaySelf: number;
+  /** Delay of the NEIGHBOURS' velocities t_nb (s), see delaySelf. */
+  delayNb: number;
+  /** Apply (t_self, t_nb) to the local viscosity ν∇²u. */
+  delayLocal: boolean;
+  /** Apply (t_self, t_nb) to the long-range kernel / fractional term. */
+  delayKernel: boolean;
 }
 
 export const defaultParams: FluidParams = {
@@ -115,10 +115,10 @@ export const defaultParams: FluidParams = {
   kernelAlpha: 3,
   kernelS: 0.5,
   kernelMT: false,
-  kernelDelay: false,
-  kernelVInt: 1,
-  kernelShells: 8,
-  kernelCalcDelay: 0,
+  delaySelf: 0,
+  delayNb: 0,
+  delayLocal: true,
+  delayKernel: true,
 };
 
 /**
@@ -129,36 +129,42 @@ export const defaultParams: FluidParams = {
  */
 export const DELAY_SPEED_LIMIT = 10;
 
-/** Memory budget of the delay history, per velocity component (bytes). */
-export const DELAY_BUDGET_BYTES = 32 * 2 ** 20;
+/** Memory budget of the delay history (both velocity components, bytes). */
+export const DELAY_BUDGET_BYTES = 64 * 2 ** 20;
+
+/** Largest local-viscosity number ν Δt_sub / h² per explicit sub-step (2D explicit limit: 1/4). */
+export const LOCAL_SUBSTEP_NUMBER = 0.2;
+/** Cap on the number of explicit sub-steps of the delayed local viscosity. */
+export const MAX_LOCAL_SUBSTEPS = 32;
 
 export interface DelayInfo {
-  /** Whether the retarded path is used for the current settings. */
-  active: boolean;
-  rCut: number;
-  rTail: number;
-  /** Longest delay t_c + r_tail/v_int (s). */
+  /** Delayed update in use for the local viscosity / the long-range term. */
+  local: boolean;
+  kernel: boolean;
+  tSelf: number;
+  tNb: number;
+  /** Longest delay max(t_self, t_nb) the history must cover (s; 0 if nothing is delayed). */
   tauMax: number;
-  /** Calculation delay t_c (s) and longest interaction delay r_tail/v_int (s; 0 if off). */
-  tCalc: number;
-  tInteraction: number;
-  /** Whether the finite interaction speed is in use. */
-  interaction: boolean;
-  /** S·t_c (dimensionless; regime boundaries 1/e and π/2) and S·Δt (explicit-update number). */
-  sTc: number;
-  sDt: number;
   /** History sampling interval (s). */
   interval: number;
-  /** Frames needed / stored / capacity (per component). */
+  /** Frames needed / stored / capacity. */
   framesNeeded: number;
   framesStored: number;
   capacity: number;
-  /** Bytes currently held by the history (both components). */
+  /** Bytes currently held by the history. */
   bytes: number;
-  /** Shell outer radii (domain units) and masses, u sub-grid. */
-  rOuter: number[];
-  mass: number[];
-  selfWeight: number;
+  /** ν Δt / h² (explicit limit 1/4) and the number of explicit sub-steps used for it. */
+  localNumber: number;
+  localSubsteps: number;
+  /** Rate × Δt of the long-range term: S Δt, or ν_s G₀ Δt for the fractional Laplacian. */
+  kernelNumber: number;
+}
+
+export interface DelayStability {
+  /** Local viscosity: A = 4ν/h², mode parameter c = (cos k_x h + cos k_y h)/2. */
+  local: ModeScan | null;
+  /** Long-range term: A = S (or ν_s G₀), mode parameter q = K̂(k) (or 1 − λ^s/G₀). */
+  kernel: ModeScan | null;
 }
 
 export type RGB = readonly [number, number, number];
@@ -189,8 +195,11 @@ export class FluidSolver {
   };
 
   private nl?: { key: string; u: NonlocalOperator; v: NonlocalOperator };
-  /** Past velocity fields for the retarded kernel (cleared on reset / boundary change). */
-  private readonly hist = { u: new DelayHistory(), v: new DelayHistory() };
+  /** Past velocity fields of the delayed viscosity terms (cleared on reset / boundary change). */
+  private readonly hist = new FieldHistory();
+  private dbuf?: { f0u: Float32Array; f0v: Float32Array; nbU: Float64Array; nbV: Float64Array;
+    selfU: Float64Array; selfV: Float64Array; sumU: Float64Array; sumV: Float64Array };
+  private stabCache?: { key: string; value: DelayStability };
 
   /** Simulated time (s) and step counter. */
   time = 0;
@@ -254,58 +263,103 @@ export class FluidSolver {
     this.clearDelayHistory();
   }
 
-  /** Forget the stored velocity history of the retarded kernel. */
+  /** Forget the stored velocity history of the delayed terms. */
   clearDelayHistory(): void {
-    this.hist.u.clear();
-    this.hist.v.clear();
+    this.hist.clear();
   }
 
-  /** True if the next step uses the retarded (finite-speed) kernel. */
+  /** Effective delays (non-negative, finite). */
+  private delays(): [number, number] {
+    const f = (x: number) => (x > 0 && Number.isFinite(x) ? x : 0);
+    return [f(this.params.delaySelf), f(this.params.delayNb)];
+  }
+
+  /** The long-range term is active at all (fractional only on the torus). */
+  private kernelActive(): boolean {
+    const p = this.params;
+    if (p.kernel === 'none' || !(p.kernelStrength > 0)) return false;
+    return p.kernel !== 'fractional' || p.walls === 'periodic';
+  }
+
+  /** True if the local viscosity ν∇²u uses the delayed (explicit) update. */
+  localDelayActive(): boolean {
+    const [ts, tn] = this.delays();
+    return this.params.delayLocal && this.params.viscosity > 0 && (ts > 0 || tn > 0);
+  }
+
+  /** True if the long-range term uses the delayed (explicit) update. */
+  kernelDelayActive(): boolean {
+    const [ts, tn] = this.delays();
+    return this.params.delayKernel && this.kernelActive() && (ts > 0 || tn > 0);
+  }
+
+  /** True if the next step uses any delayed term. */
   delayActive(): boolean {
-    return this.interactionDelayActive() || this.calcDelayActive();
+    return this.localDelayActive() || this.kernelDelayActive();
   }
 
-  /** Finite interaction speed in use (toggle on, finite v_int, convolution kernel). */
-  interactionDelayActive(): boolean {
+  /** ν Δt / h² and the explicit sub-step count of the delayed local viscosity. */
+  private localSubsteps(): { number: number; n: number } {
     const p = this.params;
-    return p.kernelDelay && (p.kernel === 'gaussian' || p.kernel === 'cucker-smale' || p.kernel === 'power')
-      && Number.isFinite(p.kernelVInt) && p.kernelVInt > 0 && p.kernelStrength > 0;
+    const num = (p.viscosity * p.dt) / (this.grid.h * this.grid.h);
+    const [ts] = this.delays();
+    // t_self = 0: own velocity treated implicitly, one step is enough
+    const n = ts > 0 ? Math.min(MAX_LOCAL_SUBSTEPS, Math.max(1, Math.ceil(num / LOCAL_SUBSTEP_NUMBER))) : 1;
+    return { number: num, n };
   }
 
-  /** Calculation delay t_c > 0 in use (convolution kernel). */
-  calcDelayActive(): boolean {
+  /** Delays, history memory and explicit-update numbers (for the UI). */
+  delayInfo(): DelayInfo {
     const p = this.params;
-    return (p.kernel === 'gaussian' || p.kernel === 'cucker-smale' || p.kernel === 'power')
-      && p.kernelCalcDelay > 0 && Number.isFinite(p.kernelCalcDelay) && p.kernelStrength > 0;
-  }
-
-  /** Shells, delays and history memory of the retarded kernel (for the UI). */
-  delayInfo(): DelayInfo | null {
-    const p = this.params;
-    if (!(p.kernel === 'gaussian' || p.kernel === 'cucker-smale' || p.kernel === 'power')) return null;
-    const ops = this.kernelOperators();
-    const su = ops.u.shells(p.kernelShells);
-    const sv = ops.v.shells(p.kernelShells);
-    const interaction = p.kernelDelay && Number.isFinite(p.kernelVInt) && p.kernelVInt > 0;
-    const vInt = interaction ? p.kernelVInt : Infinity;
-    let rMax = 0;
-    for (const sh of [su, sv]) for (let m = 0; m < sh.rOuter.length; m++) if (sh.mass[m] > 0) rMax = Math.max(rMax, sh.rOuter[m]);
-    const tCalc = p.kernelCalcDelay > 0 && Number.isFinite(p.kernelCalcDelay) ? p.kernelCalcDelay : 0;
-    const tInteraction = interaction ? rMax / vInt : 0;
-    const tauMax = tCalc + tInteraction;
-    const h = this.hist.u;
+    const [ts, tn] = this.delays();
+    const local = this.localDelayActive(), kernel = this.kernelDelayActive();
+    const tauMax = local || kernel ? Math.max(ts, tn) : 0;
+    const h = this.hist;
     const interval = h.interval || p.dt;
+    const ls = this.localSubsteps();
+    let kernelNumber = 0;
+    if (this.kernelActive()) {
+      kernelNumber = p.kernelStrength * p.dt * (p.kernel === 'fractional' ? this.kernelOperators().u.diagonal() : 1);
+    }
     return {
-      active: this.delayActive(),
-      rCut: su.rCut, rTail: su.rTail, tauMax, tCalc, tInteraction, interaction,
-      sTc: p.kernelStrength * tCalc, sDt: p.kernelStrength * p.dt,
-      interval,
+      local, kernel, tSelf: ts, tNb: tn, tauMax, interval,
       framesNeeded: tauMax > 0 ? Math.ceil(tauMax / interval) + 1 : 0,
-      framesStored: h.frames.length,
-      capacity: h.capacity,
-      bytes: this.hist.u.bytes() + this.hist.v.bytes(),
-      rOuter: Array.from(su.rOuter), mass: Array.from(su.mass), selfWeight: su.selfWeight,
+      framesStored: h.frames.length, capacity: h.capacity, bytes: h.bytes(),
+      localNumber: ls.number, localSubsteps: ls.n, kernelNumber,
     };
+  }
+
+  /**
+   * Predicted linear stability of the delayed terms for the current settings:
+   * the most unstable Fourier mode of û′ = −A û(t − t_self) + B û(t − t_nb)
+   * for each component (see stability.ts). null where a component is off or
+   * not delayed. Cached per parameter set.
+   */
+  delayStability(): DelayStability {
+    const p = this.params;
+    const [ts, tn] = this.delays();
+    const g = this.grid;
+    const local = p.delayLocal && p.viscosity > 0 && (ts > 0 || tn > 0);
+    const kern = p.delayKernel && this.kernelActive() && (ts > 0 || tn > 0);
+    const key = JSON.stringify([ts, tn, local, kern, p.viscosity, p.kernel, p.kernelStrength, p.kernelRange,
+      p.kernelBeta, p.kernelAlpha, p.kernelS, p.walls, g.nx, g.ny]);
+    if (this.stabCache?.key === key) return this.stabCache.value;
+    const value: DelayStability = { local: null, kernel: null };
+    const nMax = Math.max(g.nx, g.ny);
+    if (local) {
+      // longest resolved wave: one period across the domain (torus) / half a period (walls)
+      const kh = (isPeriodic(p.walls) ? 2 : 1) * Math.PI / nMax;
+      const cMax = (1 + Math.cos(kh)) / 2;
+      value.local = scanModes((4 * p.viscosity) / (g.h * g.h), -1, cMax, ts, tn, 41);
+    }
+    if (kern) {
+      const op = this.kernelOperators().u;
+      const [lo, hi] = op.modeRatioRange();
+      const A = p.kernelStrength * op.diagonal();
+      value.kernel = scanModes(A, lo, hi, ts, tn, 41);
+    }
+    this.stabCache = { key, value };
+    return value;
   }
 
   /**
@@ -537,43 +591,94 @@ export class FluidSolver {
   }
 
   /**
-   * Retarded kernel: each point aligns with the velocity other points had
-   * r/v_int ago (r = distance). The current field is recorded into the
-   * history afterwards. See NonlocalOperator.applyRetarded.
+   * Delayed viscosity (any of the two components with t_self or t_nb > 0).
+   * Each component splits into a neighbour part read t_nb ago and a self part
+   * read t_self ago, both at the step midpoint t + Δt/2 − τ (reads at or after
+   * t use the current field):
+   *   long-range: u ← u + a (K * u_nb − c u_self)            (NonlocalOperator.applyDelayed)
+   *   local:      u ← u + (νΔt/h²)(Σ_nb u_nb − 4 u_self)     (explicit sub-steps if νΔt/h² > 0.2)
+   * With t_self = 0 the own velocity is current and is treated implicitly,
+   * u ← (u + a w)/(1 + a c) — a convex combination, stable for any Δt. The
+   * field at the start of the delayed update is recorded into the history
+   * afterwards; every face is finally clamped to ±DELAY_SPEED_LIMIT.
    */
-  private applyKernelDelayed(): void {
+  private applyDelayedViscosity(local: boolean, kernel: boolean): void {
     const g = this.grid;
     const { u, v } = this;
-    const { dt, walls, kernelVInt, kernelShells } = this.params;
-    const ops = this.kernelOperators();
+    const { dt, walls, viscosity } = this.params;
+    const [ts, tn] = this.delays();
     const t = this.time;
-    ops.u.applyRetarded((i, j) => u[uIdx(g, i + 1, j + 1)], (i, j, x) => { u[uIdx(g, i + 1, j + 1)] = x; },
-      dt, t, kernelVInt, kernelShells, this.hist.u, DELAY_BUDGET_BYTES);
-    ops.v.applyRetarded((i, j) => v[vIdx(g, i + 1, j + 1)], (i, j, x) => { v[vIdx(g, i + 1, j + 1)] = x; },
-      dt, t, kernelVInt, kernelShells, this.hist.v, DELAY_BUDGET_BYTES);
-    setUBoundary(g, u, walls);
-    setVBoundary(g, v, walls);
-  }
-
-  /**
-   * Calculation-delayed kernel (t_c > 0, optionally with finite v_int):
-   * explicit update, see NonlocalOperator.applyCalcDelayed, then the speed guard.
-   */
-  private applyKernelCalcDelayed(): void {
-    const g = this.grid;
-    const { u, v } = this;
-    const { dt, walls, kernelVInt, kernelShells, kernelCalcDelay } = this.params;
-    const ops = this.kernelOperators();
-    const t = this.time;
-    const vInt = this.interactionDelayActive() ? kernelVInt : Infinity;
+    const hist = this.hist;
+    hist.configure(u.length, v.length, dt, Math.max(ts, tn), DELAY_BUDGET_BYTES);
+    const b = (this.dbuf ??= {
+      f0u: new Float32Array(u.length), f0v: new Float32Array(v.length),
+      nbU: new Float64Array(u.length), nbV: new Float64Array(v.length),
+      selfU: new Float64Array(u.length), selfV: new Float64Array(v.length),
+      sumU: new Float64Array(u.length), sumV: new Float64Array(v.length),
+    });
+    b.f0u.set(u);
+    b.f0v.set(v);
     const L = DELAY_SPEED_LIMIT;
     const clamp = (x: number) => (x > L ? L : x < -L ? -L : x);
-    ops.u.applyCalcDelayed((i, j) => u[uIdx(g, i + 1, j + 1)], (i, j, x) => { u[uIdx(g, i + 1, j + 1)] = clamp(x); },
-      dt, t, kernelCalcDelay, vInt, kernelShells, this.hist.u, DELAY_BUDGET_BYTES);
-    ops.v.applyCalcDelayed((i, j) => v[vIdx(g, i + 1, j + 1)], (i, j, x) => { v[vIdx(g, i + 1, j + 1)] = clamp(x); },
-      dt, t, kernelCalcDelay, vInt, kernelShells, this.hist.v, DELAY_BUDGET_BYTES);
-    setUBoundary(g, u, walls);
-    setVBoundary(g, v, walls);
+    const implicitSelf = ts === 0;
+    /** Read the fields at T into (outU, outV); T ≥ t → the current (evolving) field. */
+    const read = (T: number, outU: Float64Array, outV: Float64Array) => {
+      if (T >= t) { for (let k = 0; k < u.length; k++) outU[k] = u[k]; for (let k = 0; k < v.length; k++) outV[k] = v[k]; return; }
+      hist.read(T, t, b.f0u, b.f0v, outU, outV);
+    };
+    if (kernel) {
+      const tMid = t + 0.5 * dt;
+      read(Math.min(t, tMid - tn), b.nbU, b.nbV);
+      if (!implicitSelf) read(Math.min(t, tMid - ts), b.selfU, b.selfV);
+      const ops = this.kernelOperators();
+      const { nbU, nbV, selfU, selfV } = b;
+      ops.u.applyDelayed(
+        (i, j) => nbU[uIdx(g, i + 1, j + 1)], implicitSelf ? null : (i, j) => selfU[uIdx(g, i + 1, j + 1)],
+        (i, j) => u[uIdx(g, i + 1, j + 1)], (i, j, x) => { u[uIdx(g, i + 1, j + 1)] = clamp(x); }, dt);
+      ops.v.applyDelayed(
+        (i, j) => nbV[vIdx(g, i + 1, j + 1)], implicitSelf ? null : (i, j) => selfV[vIdx(g, i + 1, j + 1)],
+        (i, j) => v[vIdx(g, i + 1, j + 1)], (i, j, x) => { v[vIdx(g, i + 1, j + 1)] = clamp(x); }, dt);
+      setUBoundary(g, u, walls);
+      setVBoundary(g, v, walls);
+    }
+    if (local) {
+      const n = this.localSubsteps().n;
+      const ds = dt / n;
+      const a = (viscosity * ds) / (g.h * g.h);
+      const iLast = uLastI(g, walls), jLast = vLastJ(g, walls);
+      const { nbU, nbV, selfU, selfV, sumU, sumV } = b;
+      for (let m = 0; m < n; m++) {
+        const tm = t + (m + 0.5) * ds;
+        read(tm - tn, nbU, nbV);
+        neighbourSumU(g, nbU, sumU, walls);
+        neighbourSumV(g, nbV, sumV, walls);
+        if (implicitSelf) {
+          const inv = 1 / (1 + 4 * a);
+          for (let j = 1; j <= g.ny; j++) for (let i = 1; i <= iLast; i++) {
+            const k = uIdx(g, i, j);
+            u[k] = clamp((u[k] + a * sumU[k]) * inv);
+          }
+          for (let j = 1; j <= jLast; j++) for (let i = 1; i <= g.nx; i++) {
+            const k = vIdx(g, i, j);
+            v[k] = clamp((v[k] + a * sumV[k]) * inv);
+          }
+        } else {
+          read(tm - ts, selfU, selfV);
+          for (let j = 1; j <= g.ny; j++) for (let i = 1; i <= iLast; i++) {
+            const k = uIdx(g, i, j);
+            u[k] = clamp(u[k] + a * (sumU[k] - 4 * selfU[k]));
+          }
+          for (let j = 1; j <= jLast; j++) for (let i = 1; i <= g.nx; i++) {
+            const k = vIdx(g, i, j);
+            v[k] = clamp(v[k] + a * (sumV[k] - 4 * selfV[k]));
+          }
+        }
+        setUBoundary(g, u, walls);
+        setVBoundary(g, v, walls);
+      }
+    }
+    if (hist.wants(t)) hist.push(t, b.f0u, b.f0v);
+    hist.prune(t + dt);
   }
 
   /** Advance the simulation by one time step of length params.dt. */
@@ -590,8 +695,10 @@ export class FluidSolver {
     setUBoundary(g, u, walls);
     setVBoundary(g, v, walls);
 
-    // 2. viscosity
-    if (viscosity > 0) {
+    // 2. viscosity (instantaneous parts: implicit / exact, unchanged)
+    const localDelayed = this.localDelayActive();
+    const kernelDelayed = this.kernelDelayActive();
+    if (viscosity > 0 && !localDelayed) {
       u0.set(u);
       v0.set(v);
       diffuseU(g, u, u0, viscosity, dt, iterations, walls);
@@ -599,13 +706,12 @@ export class FluidSolver {
     }
 
     // 2b. nonlocal (long-range) viscosity / alignment
-    if (this.calcDelayActive()) this.applyKernelCalcDelayed();
-    else if (this.interactionDelayActive()) this.applyKernelDelayed();
-    else {
-      // history only stays valid while it is recorded every step
-      if (this.hist.u.frames.length || this.hist.v.frames.length) this.clearDelayHistory();
-      if (this.params.kernel !== 'none') this.applyKernel();
-    }
+    if (!kernelDelayed && this.params.kernel !== 'none') this.applyKernel();
+
+    // 2c. delayed viscosity terms (own velocity t_self ago, neighbours t_nb ago)
+    if (localDelayed || kernelDelayed) this.applyDelayedViscosity(localDelayed, kernelDelayed);
+    // history only stays valid while it is recorded every step
+    else if (this.hist.frames.length) this.clearDelayHistory();
 
     // 3. projection
     project(g, u, v, pressure, tmp, dt, iterations, walls, sor);

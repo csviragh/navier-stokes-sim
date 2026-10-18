@@ -19,37 +19,55 @@ const legendEl = document.getElementById('legend')!;
 const settings: Settings = { ...defaultSettings };
 
 /**
- * "Delayed flocking" quick start: long-range Cucker–Smale alignment +
- * self-propulsion on a torus with a finite interaction speed. Information
- * needs r/v_int to cross distance r, so local swirls align long before they
- * hear about the rest of the flock. Measured on 205×128: with v_int = ∞ the
- * flock is aligned (φ ≈ 1) after ~2 s; with v_int = 0.1 it takes ~25 s, with
- * swirling domains meanwhile and the speed held at ~0.3 v₀ by the drag of the
- * retarded (older, disordered) velocities.
- */
-const DELAYED_FLOCKING: Partial<Settings> = {
-  kernel: 'cucker-smale', kernelStrength: 10, kernelRange: 0.15, kernelBeta: 1, kernelMT: false,
-  kernelDelay: true, kernelVInt: 0.1, kernelShells: 8, kernelCalcDelay: 0,
-  vorticity: 0, selfPropulsion: true, walls: 'periodic',
-  // keep the dye so the swirling domains stay visible while they slowly align
-  dyeDissipation: 0,
-};
-
-/**
- * "Delay oscillations" quick start: Cucker–Smale alignment (R = 0.15) with a
- * calculation delay t_c = 0.42 s at S = 4, so S·t_c = 1.68 > π/2. Short-wave
- * modes (K̂ ≈ 0, a_k ≈ S) obey u' ≈ −S u(t − t_c), whose rightmost root
- * λ = W₀(−S t_c)/t_c = 0.10 ± 3.80i s⁻¹ grows slowly while oscillating with a
+ * "Delay oscillations" quick start: Cucker–Smale alignment (R = 0.15) with
+ * the own and the neighbours' velocity both t_self = t_nb = 0.42 s old at
+ * S = 4, so S·t = 1.68 > π/2 (the 6c811e2 "calculation delay" setting; the
+ * local viscosity is left undelayed, as it was then). Short-wave modes
+ * (K̂ ≈ 0, a_k ≈ S) obey u' ≈ −S u(t − t), whose rightmost root
+ * λ = W₀(−S t)/t = 0.11 ± 3.81i s⁻¹ grows slowly while oscillating with a
  * period of 1.65 s: the whole vortex pattern reverses its sense of rotation
  * about every 0.8 s. Weak self-propulsion (τ = 2 s, v₀ = 0.3) saturates the
  * growth into a sustained oscillation (overlap trace swings ±1, ⟨|u|⟩ ≈ 0.35).
- * Interaction delay off (v_int = ∞), so the cost is one convolution per step.
  */
 const DELAY_OSCILLATIONS: Partial<Settings> = {
   kernel: 'cucker-smale', kernelStrength: 4, kernelRange: 0.15, kernelBeta: 1, kernelMT: false,
-  kernelDelay: false, kernelCalcDelay: 0.42,
+  delaySelf: 0.42, delayNb: 0.42, delayLocal: false, delayKernel: true,
   vorticity: 0, selfPropulsion: true, selfPropTau: 2, selfPropV0: 0.3, walls: 'periodic',
   viscosity: 1e-5, dyeDissipation: 0,
+};
+
+/**
+ * "Local viscosity delay" quick start: no kernel, only ν∇² delayed, with the
+ * neighbours' velocities much older than the own one: t_self = 0.5 s,
+ * t_nb = 2 s, and ν set from the grid so that A = 4ν/h² = 2 s⁻¹ (the
+ * self/neighbour split of the discrete Laplacian has rates ∝ 1/h²). In units
+ * of 1/A this is A·t_self = 1, A·t_nb = 4, where the longest waves are the
+ * most unstable modes: λ = 0.26 ± 2.66i s⁻¹ (period 2.4 s), the checkerboard
+ * grows only half as fast (0.14 /s) and is wiped out by the interpolation of
+ * the advection step once the fluid moves. Self-propulsion with a short τ
+ * (0.2 s, v₀ = 0.3) bounds the amplitude, so the large-scale flow keeps
+ * sloshing back and forth (overlap trace).
+ */
+const LOCAL_DELAY_RATE = 2;
+const LOCAL_DELAY: Partial<Settings> = {
+  kernel: 'none', delaySelf: 0.5, delayNb: 2, delayLocal: true, delayKernel: true,
+  vorticity: 0, selfPropulsion: true, selfPropTau: 0.2, selfPropV0: 0.3, walls: 'periodic', dyeDissipation: 0,
+};
+
+/**
+ * "Own-velocity delay" quick start: the "Delay oscillations" alignment with
+ * only the own velocity delayed (t_self = 0.42 s, t_nb = 0). For long waves
+ * (K̂ → 1) λ = S(K̂ − e^{−λ t_self}) has a positive real root once
+ * S·t_self > 1: the point brakes against where it WAS while following where
+ * its neighbours ARE, so large-scale motion amplifies itself (the mean
+ * flow becomes marginal: dM/dt = −S[M(t−t_self) − M]). The fast
+ * self-propulsion (τ = 0.1 s) caps the speed, so the result is a single
+ * aligned flock (φ → 1) whose heading rotates steadily at ω ≈ 4 rad/s
+ * (ω = S·sin(ω t_self)). Compare with t_self = 0, t_nb = 0.42 (stable: own
+ * velocity current, |B| ≤ A).
+ */
+const OWN_DELAY: Partial<Settings> = {
+  ...DELAY_OSCILLATIONS, delaySelf: 0.42, delayNb: 0, selfPropTau: 0.1,
 };
 
 /** Polar order parameter φ = |⟨u⟩| / ⟨|u|⟩ (1 = perfectly aligned flock); needs updateDiagnostics(). */
@@ -87,10 +105,10 @@ function solverParams(s: Settings): Partial<FluidParams> {
     kernelAlpha: s.kernelAlpha,
     kernelS: s.kernelS,
     kernelMT: s.kernelMT,
-    kernelDelay: s.kernelDelay,
-    kernelVInt: s.kernelVInt,
-    kernelShells: s.kernelShells,
-    kernelCalcDelay: s.kernelCalcDelay,
+    delaySelf: s.delaySelf,
+    delayNb: s.delayNb,
+    delayLocal: s.delayLocal,
+    delayKernel: s.delayKernel,
   };
 }
 
@@ -286,7 +304,8 @@ const controls = bindControls(settings, {
     settings.kernelStrength = 3;
     settings.kernelRange = 0.05;
     settings.kernelBeta = 1;
-    settings.kernelCalcDelay = 0;
+    settings.delaySelf = 0;
+    settings.delayNb = 0;
     // vorticity confinement amplifies grid-scale noise once the flow is ordered
     settings.vorticity = 0;
     settings.selfPropulsion = true;
@@ -298,30 +317,33 @@ const controls = bindControls(settings, {
     trace.reset(solver);
     renderer.resetScales();
   },
-  onDelayedFlocking() {
-    // Quick start: the flocking setup with a finite interaction speed, see
-    // DELAYED_FLOCKING for the parameters and what to look for.
-    Object.assign(settings, DELAYED_FLOCKING);
-    settings.paused = false;
-    solver.setParams(solverParams(settings));
-    solver.reset();
-    solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05 * Math.max(settings.selfPropV0, 0.1) / 0.5);
-    trace.reset(solver);
-    renderer.resetScales();
-  },
   onDelayOscillations() {
-    // Quick start: calculation delay beyond the oscillation threshold, see DELAY_OSCILLATIONS.
-    Object.assign(settings, DELAY_OSCILLATIONS);
-    // vorticity shows the reversals best (vortices flip colour every half period)
-    settings.view = 'vorticity';
-    settings.paused = false;
-    solver.setParams(solverParams(settings));
-    solver.reset();
-    solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05);
-    trace.reset(solver);
-    renderer.resetScales();
+    // Quick start: equal own / neighbour delays beyond the oscillation threshold, see DELAY_OSCILLATIONS.
+    // The vorticity view shows the reversals best (vortices flip colour every half period).
+    delayQuickStart(DELAY_OSCILLATIONS, 'vorticity');
+  },
+  onLocalDelay() {
+    // Quick start: delayed local viscosity only, see LOCAL_DELAY; ν from the current grid (A = 4ν/h²).
+    const h = solver.grid.h;
+    delayQuickStart({ ...LOCAL_DELAY, viscosity: (LOCAL_DELAY_RATE * h * h) / 4 }, 'vorticity');
+  },
+  onOwnDelay() {
+    // Quick start: only the own velocity delayed, see OWN_DELAY.
+    delayQuickStart(OWN_DELAY, 'vorticity');
   },
 });
+
+function delayQuickStart(p: Partial<Settings>, view: Settings['view']): void {
+  Object.assign(settings, p);
+  settings.view = view;
+  settings.paused = false;
+  solver.setParams(solverParams(settings));
+  solver.reset();
+  solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05);
+  trace.reset(solver);
+  renderer.resetScales();
+  controls.sync();
+}
 
 let resizeTimer: number | undefined;
 window.addEventListener('resize', () => {
@@ -351,7 +373,7 @@ function frame(now: number): void {
       `${solver.grid.nx}×${solver.grid.ny} · step ${stepMs.toFixed(1)} ms · t = ${solver.time.toFixed(1)} s` +
       (settings.kernel !== 'none' || settings.selfPropulsion ? ` · order φ = ${polarOrder(solver).toFixed(2)}` : '');
     legendEl.textContent = info.legend;
-    controls.setDelayInfo(settings.kernel !== 'none' && settings.kernel !== 'fractional' ? solver.delayInfo() : null);
+    controls.setDelayInfo(solver.delayInfo(), solver.delayStability());
     frames = 0;
     fpsTime = now;
   }

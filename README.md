@@ -6,10 +6,11 @@ stir the fluid and inject coloured dye, and switch between views of the dye,
 velocity, pressure, vorticity, and divergence fields. Boundaries can be solid
 walls (no-slip or free-slip), fully **periodic**, or periodic in x with walls in
 y (a channel). An optional **self-propulsion (active fluid)** term turns it
-into a model of active turbulence, and long-range alignment kernels (optionally
-with a **finite interaction speed**, i.e. retarded, time-delayed interaction)
-turn it into a flock. A **calculation delay** (the point's own velocity is
-delayed as well) makes the alignment over-correct, and the flow oscillates.
+into a model of active turbulence, and long-range alignment kernels turn it
+into a flock. Two **delays**, one for the point's own velocity (t_self) and one
+for its neighbours' (t_nb), can be applied to the local and the long-range
+viscosity: the alignment then over-corrects and the flow oscillates, with a live
+stability analysis of every term.
 
 **Try it live: <https://csviragh.github.io/navier-stokes-sim/>**
 
@@ -178,232 +179,202 @@ Trans. R. Soc. A* 372 (2014).
 
 ![Cucker–Smale alignment + self-propulsion on a torus (vorticity + arrows)](docs/kernels-flocking.png)
 
-### Finite interaction speed (retarded alignment)
+### Delays: own velocity vs neighbours
 
-With the kernel on, tick **Finite interaction speed (retarded)** (`D`) to let
-the alignment signal travel at a finite speed v_int. A point at distance r then
-feels the velocity the other point had when its signal left:
+Real agents (birds, robots, cells) react to what they *sensed*, and that
+information is old: it took time to measure, transmit and process it. The
+simulator models this with **two constant delays**, applied to every
+viscosity-like term:
 
-```
-f_K(x, t) = S ∫ K(r) ( u(y, t − r/v_int) − u(x, t) ) dy,     r = |x − y|  (minimum image on periodic axes)
-t_del(r)  = r / v_int
-```
+- **t_self** (*Own-velocity delay*, 0–2 s, default 0) is how old the point's
+  knowledge of its **own** velocity is.
+- **t_nb** (*Neighbour delay*, 0–2 s, default 0) is how old the velocities of
+  its **neighbours** are.
 
-Only the received field K * u is retarded. The point's own velocity u(x, t) is
-current. This is the retarded-potential construction of electrodynamics
-(Jackson, *Classical Electrodynamics*, ch. 6) applied to velocity alignment. The
-particle versions are the delayed Cucker–Smale models (refs below). v_int is in
-domain units/s like v₀, so the short side of the domain is crossed in
-1/v_int seconds. v_int → ∞ (slider maximum, "∞ (instant)") gives back the
-instantaneous kernel. That setting, and the toggle being off, run exactly the
-old code path, bit-identical to commit dc86501.
-
-**Scheme.**
-
-- *Shells.* The normalised kernel is split radially, K = K(0)δ + Σₘ Kₘ + K_tail.
-  Kₘ (m = 0 … M−1, slider "Delay shells M", 2–16, default 8) are **equal-mass**
-  shells r ∈ (rₘ, rₘ₊₁] inside R_cut, the radius that encloses 99.5 % of ∫K. The
-  tail shell holds the remaining 0.5 % out to r_tail, beyond which less than 10⁻¹²
-  of the mass lies. Equal mass puts narrow shells where a heavy-tailed kernel such
-  as Cucker–Smale has most of its weight. The r = 0 term (a point's own velocity)
-  is never delayed. Each shell uses the delay of its **outer** radius,
-  τₘ = rₘ₊₁/v_int, so no part of the kernel ever gets information faster than
-  v_int. The price is that delays are rounded up by at most one shell width. The
-  shell spectra K̂ₘ are cached per kernel, grid, boundary, and M. Changing v_int
-  or Δt needs no recomputation.
-- *History.* A ring buffer holds past velocity fields (each component on its own
-  staggered sub-grid) as they enter the kernel step, time-stamped with simulation
-  time. On the torus it stores their **Fourier spectra**, so every frame is
-  FFT'd once when stored. A step then costs one forward FFT, M + 1 complex
-  multiply-adds, and one inverse FFT. With walls it stores real fields and
-  transforms one delayed field per shell and step (zero-padded, non-wrapping
-  convolution as before).
-- *Time interpolation.* u(t − τₘ) is interpolated linearly between the two
-  stored frames that bracket it. Before the history fills, missing delays use the
-  oldest stored frame (or the current field). **Reset**, a boundary change, a grid
-  change, or switching the delay off clears the history.
-- *Update.* Semi-implicit, like the walled instantaneous kernel:
-
-  ```
-  w     = K(0) u(x, t) + Σₘ (Kₘ * u(·, t − τₘ))(x)
-  u_new = (u + SΔt·w) / (1 + SΔt·c)          c = ∫K = 1 on the torus, c(x) = K * 1_domain with walls
-  ```
-
-  (Motsch–Tadmor uses a = SΔt/c as before.) u_new is a convex combination of
-  present and past values, so the update obeys a max principle and is stable for
-  any Δt, S, and v_int. On the torus the instantaneous kernel uses the exact
-  Fourier exponential instead. A huge v_int therefore matches it to O((SΔt)²) per
-  step, and matches an independent semi-implicit reference to 10⁻¹².
-- *Memory cap.* The history keeps at most 32 MB per velocity component (≤ 512
-  frames). If t_del,max = r_tail/v_int needs more frames than that, frames are
-  recorded every t_del,max/(capacity − 2) seconds instead of every step, still
-  interpolated linearly. The panel shows t_del,max, R_cut, r_tail, the number of
-  frames stored and their spacing ("memory-capped" when coarser than Δt), and the
-  memory used. The kernel plot shades the shells and draws the delay staircase.
-
-**What holds.**
-
-- *Causality (light cone).* An impulse at y is felt at distance r no earlier than
-  r/v_int − Δt_hist (one history interval, from the linear interpolation in
-  time), and no later than the delay of its shell plus one step. This is tested
-  on periodic and walled grids. It holds for the alignment interaction only. The
-  fluid is incompressible, so the pressure projection still acts instantly
-  everywhere.
-- *Momentum.* The retarded force is not reciprocal in time, so total momentum M
-  is not conserved instantly after a kick. What is conserved is momentum plus the
-  "in-flight" part, `M(t) + S Σₘ μₘ ∫_{t−τₘ}^{t} M(s) ds` (μₘ = shell mass). The
-  scheme conserves its discrete analogue exactly. Once the history is stationary
-  (M constant over t_del,max), M itself is conserved.
-- *Uniform flow* stays uniform, since every delay sees the same value.
-
-**What it does to a flock.** On a 205 × 128 torus with Cucker–Smale (S = 10/s,
-R = 0.15, β = 1) plus self-propulsion, weak random swirls align into a global
-flock (polar order φ = |⟨u⟩|/⟨|u|⟩ ≈ 1) after about 2 s when v_int = ∞. The times
-grow to about 12 s with v_int = 0.2, about 25 s with v_int = 0.1, and more than
-40 s with v_int = 0.05. Meanwhile large swirling domains persist, because each
-region aligns with its neighbours long before it hears about the rest of the
-flock. The retarded, still disordered velocities also act as a drag. The mean
-speed stays near 0.3 v₀ until the flock has ordered, then slowly recovers to v₀.
-In this model the delay did not destabilise the flock or cause sustained
-oscillations in any run. That fits the linear analysis, because with a current
-self term λ = −S + S K̂ e^{−λτ} has only stable roots for |K̂| < 1, and with
-delayed Cucker–Smale consensus results (Pignotti & Trélat 2018). Oscillations
-need the *reaction* itself to be delayed (the self term too), as in robot
-flocks with sensor and actuation latency; that is the calculation delay below. **📡 Delayed flocking quick start**
-(`L`) sets this up with v_int = 0.1, M = 8, periodic boundaries, no vorticity
-confinement, and no dye fade. Watch the order parameter φ in the HUD.
-
-References on delays in alignment / flocking: R. Erban, J. Haškovec & Y. Sun,
-"A Cucker–Smale model with noise and delay", *SIAM J. Appl. Math.* 76 (2016)
-1535–1557; C. Pignotti & E. Trélat, "Convergence to consensus of the general
-finite-dimensional Cucker–Smale model with time-varying delays", *Commun. Math.
-Sci.* 16 (2018) 2053–2076; C. Virágh et al., "Flocking algorithm for autonomous
-flying robots", *Bioinspir. Biomim.* 9 (2014) 025012 (communication and sensor
-delays in real robot flocks).
-
-![Delayed flocking quick start at t ≈ 7 s: swirling domains still aligning (φ = 0.51); the kernel plot shows the delay shells and the delay staircase](docs/delay-flocking.png)
-
-### Calculation delay and delay-induced oscillations
-
-The delay has two components. The **interaction delay** r/v_int (above) is the
-signal travel time. The **calculation delay** t_c is a constant processing time
-(sensing, computing, actuating) that applies to the neighbours' velocities *and*
-to the point's own velocity:
+Every viscosity term can be split exactly into "what the neighbours do" minus
+"what I do", and each part gets its own delay:
 
 ```
-f(x, t) = S ∫ K(r) ( u(y, t − t_c − r/v_int) − u(x, t − t_c) ) dy
+local viscosity:   ν/h² [ Σ_nb u(x+e, t − t_nb) − 4 u(x, t − t_self) ]        (5-point stencil, per boundary)
+long-range kernel: S [ (K * u)(x, t − t_nb) − c u(x, t − t_self) ]           (c = 1 normalised, c = ∫K Motsch–Tadmor)
+fractional:        −ν_s [ G₀ u(t − t_self) − (G₀ − (−Δ)^s) u(t − t_nb) ]    (G₀ = mean of the symbol λ^s, torus only)
 ```
 
-So a neighbour at distance r is seen t_c + r/v_int late, and the point's own
-velocity t_c late. Set it with the **Calculation delay t_c** slider (0–2 s,
-default 0 = off) in the *Delay* box of the kernel section. It works with or
-without the finite interaction speed. With v_int = ∞ every shell has the same
-delay t_c, so the term is a single convolution of u(t − t_c) and costs almost
-nothing extra.
+With t_self = t_nb = 0 these are the ordinary terms. The local split uses the
+same stencil as the implicit diffusion for each boundary type (wall faces and
+ghost reflections for no-slip/free-slip, wrap-around on periodic axes), so it is
+exact on every boundary. For the fractional Laplacian there is no finite
+stencil, but there is a clean split: its diagonal (the self-weight of the
+operator) is G₀ = ⟨λ^s⟩ over all grid modes, the rest is the neighbour part. For
+s = 1 this reproduces the delayed local term (tested to 1e-5). Dye diffusion is
+not delayed: it is a passive scalar, not something the agents compute.
 
-**Linear stability.** On the torus, linearised (no advection), each Fourier mode
-k of each velocity component obeys
+**Design: one shared pair of delays, per-term switches.** The two sliders apply
+to every term, with two check boxes (*Apply to local viscosity ν∇²u*, *Apply to
+long-range term*, both on by default) to take a term out. A delay is a property
+of the agent (how stale its sensors and its own state estimate are), not of a
+particular force, so one pair is the honest model and keeps the combined
+characteristic equation a two-delay one. Per-term switches still allow the
+textbook experiments (only the kernel delayed, as in the delayed Cucker–Smale
+papers, or only the local viscosity).
 
-```
-û_k'(t) = −S [ û_k(t − t_c) − K(0) û_k(t − t_c) − Σ_m K̂_m(k) û_k(t − t_c − r_m/v_int) ]
-λ        = −S e^{−λ t_c} ( 1 − K(0) − Σ_m K̂_m(k) e^{−λ r_m/v_int} )           (characteristic equation)
-```
+The finite interaction speed (v_int, distance-dependent delays and delay
+shells) from earlier versions is gone. The neighbour delay t_nb is a constant,
+so it is a single convolution of one past field.
 
-where K(0) is the weight of the r = 0 offset and K̂_m the transform of shell m
-(continuum: 1 − ∫K(r) e^{−ik·r} e^{−λ r/v_int} dr). With v_int = ∞ this is
-
-```
-λ = −a_k e^{−λ t_c},   a_k = S (1 − K̂(k)),   so   λ = W₀(−a_k t_c) / t_c   (Lambert W, principal branch = rightmost root)
-```
-
-the classic equation x' = −a x(t − τ) (Hayes 1950). Its regimes:
-
-| a_k t_c | rightmost root | behaviour |
-|---|---|---|
-| < 1/e ≈ 0.368 | real, negative | monotone decay |
-| 1/e … π/2 | complex, Re λ < 0 | damped oscillation |
-| = π/2 | λ = ± i a_k | neutral oscillation, period 4 t_c |
-| > π/2 | complex, Re λ > 0 | growing oscillation |
-
-The uniform mode (k = 0, K̂ = 1) is never affected: the term vanishes for a
-uniform flow. Since a_k → S for short waves (K̂ → 0), the flow as a whole starts
-to oscillate once **S·t_c > π/2**. The panel shows S·t_c and the predicted regime
-(`monotone`, `damped oscillation`, `unstable oscillation`). Local viscosity adds
-an instantaneous damping b_k = νk², and then the threshold moves to
-t_c* = arccos(−b/a)/√(a² − b²) (stable for every t_c if b ≥ a, again Hayes). With t_c = 0
-the characteristic equation is λ = −S + S K̂ e^{−λτ}. The instantaneous damping S
-then outweighs the delayed feedback |S K̂| ≤ S, so it is stable for every
-interaction delay. That is why the interaction delay alone only slows flocking
-down. With t_c > 0, the interaction delay adds lag on top and can tip a stable
-t_c into instability (table below).
-
-**Numerics vs. theory** (full solver, 64 × 64 torus (v_int = ∞ rows; 48 × 48 for the
-finite-v_int rows), shear wave u_x = A sin(2π·4y),
-which is an exact Navier–Stokes solution, so only the alignment term acts;
-Cucker–Smale R = 0.15, S = 4, ν = 0; K̂ = 0.0075, a_k = 3.97, predicted onset
-t_c* = π/(2a_k) = 0.396 s):
-
-| t_c (s) | v_int | predicted λ (1/s) | simulated growth rate, ω |
-|---|---|---|---|
-| 0.35 | ∞ | −0.249 ± 4.324 i | −0.249, 4.323 |
-| 0.39 | ∞ | −0.026 ± 4.011 i | −0.026, 4.011 |
-| 0.40 | ∞ | +0.020 ± 3.939 i | +0.019, 3.939 |
-| 0.42 | ∞ | +0.101 ± 3.803 i | +0.101, 3.803 |
-| 0.45 | ∞ | +0.204 ± 3.616 i | +0.204, 3.616 |
-| 0.38 | 0.1 | +0.091 ± 4.055 i (v_int = ∞: −0.075) | +0.090, 4.050 |
-| 0.30 | 0.1 | −0.362 ± 4.480 i | −0.369, 4.481 |
-
-The onset is where the theory puts it, to within the 0.01 s spacing tested. Above
-it, the amplitude grows until the speed guard or self-propulsion stops it.
-
-**What you see.** **〰️ Delay oscillations quick start** (`O`) uses Cucker–Smale
-(R = 0.15, β = 1), S = 4/s, t_c = 0.42 s (S·t_c = 1.68 > π/2), v_int = ∞, weak
-self-propulsion (τ = 2 s, v₀ = 0.3), periodic boundaries, no vorticity
-confinement, and the vorticity view. It starts from weak random swirls
-(|u| ≈ 0.05). The prediction for the short waves is λ = 0.10 ± 3.80 i, a period
-of 1.65 s. The whole vortex pattern reverses its sense of rotation every half
-period, and red and blue swap. The HUD trace (top left, last 20 s) plots the polar
-order φ, the mean speed ⟨|u|⟩ and the **overlap** C(t) = ⟨u·u₀⟩/⟨u₀·u₀⟩ with
-the flow at the quick start. C swings between about +1 and −1. In the browser
-(219 × 128) the first zero crossings of C came at 0.43, 1.35, 2.23, 3.02, 3.77,
-4.47, 5.10 s: a period of about 1.8 s at first, shortening to about 1.3 s as the
-amplitude grows. That is close to the linear 1.65 s, but not equal, because the
-flow is nonlinear and has many modes. Meanwhile ⟨|u|⟩ grows from 0.04 to about
-0.43 within 8 s and then saturates near 0.4–0.55. Self-propulsion and advection
-bound it, and the oscillation keeps going with a less regular pattern. Without
-self-propulsion the growth continues until the speed guard caps it.
-
-![Delay oscillations quick start: vorticity half a period apart (overlap +1.12 at t = 3.50 s, −1.08 at t = 4.23 s; the pattern has reversed) and the HUD trace](docs/calc-delay-oscillations.png)
-
-**Numerics of the delayed term.** The own velocity is in the past, so the update
-can no longer be implicit in u. For t_c > 0 it is explicit, with the delayed
-right-hand side taken at the step midpoint (second order in Δt):
+**Stability analysis.** For one Fourier mode every delayed term has the form
 
 ```
-u ← u + a ( w − c·u_d ),   a = S Δt  (Motsch–Tadmor: S Δt / c)
-u_d = u(x, t + Δt/2 − t_c),   w = Σ_taps K_tap * u(·, t + Δt/2 − t_c − τ_tap)
+x'(t) = −A x(t − t_self) + B x(t − t_nb)
+λ + A e^{−λ t_self} − B e^{−λ t_nb} = 0           (characteristic equation, Bellman & Cooke 1963)
+local:      A = 4ν/h²,  B = A c,   c = (cos k_x h + cos k_y h)/2 ∈ [−1, 1]
+kernel:     A = S,      B = S K̂(k)
+fractional: A = ν_s G₀, B = ν_s (G₀ − λ^s)
 ```
 
-Past fields come from the same history buffer (spectra on the torus, linearly
-interpolated in time), which now covers t_c + r_tail/v_int (just t_c when
-v_int = ∞). Lookups later than the current time use the current field, so
-0 < t_c < Δt blends smoothly into explicit Euler. The memory cap (32 MB per
-component, ≤ 512 frames) coarsens the frame spacing if needed. Reset, grid and
-boundary changes, or turning both delays off clear the history. Until the
-history covers the delay, the oldest frame is used. The explicit update needs
-S·Δt ≲ 1 (the panel warns above 1). With t_c = 0 the old code path runs
-unchanged, bit for bit (semi-implicit update, exact Fourier update when no delay
-is on). A **speed guard** clamps each face velocity to ±10 after the delayed
-update. It keeps a run-away instability finite, and in the quick start
-self-propulsion saturates the growth long before the guard is reached.
+The mode grows if the rightmost root has Re λ > 0. Two special cases are exact:
 
-References: N. D. Hayes, "Roots of the transcendental equation associated with a
-certain difference-differential equation", *J. London Math. Soc.* 25 (1950)
-226–232 (stability region of x' = a x + b x(t − τ)); R. Erban, J. Haškovec &
-Y. Sun, *SIAM J. Appl. Math.* 76 (2016) 1535–1557; C. Pignotti & E. Trélat,
-*Commun. Math. Sci.* 16 (2018) 2053–2076; C. Virágh et al., "Flocking algorithm
-for autonomous flying robots", *Bioinspir. Biomim.* 9 (2014) 025012 (models
-sensor and communication delays and the oscillations they cause in robot flocks).
+- t_self = t_nb = τ: λ = −(A − B) e^{−λτ}, so λ = W₀(−(A − B)τ)/τ (Lambert W,
+  principal branch). Monotone decay for (A − B)τ ≤ 1/e, damped oscillation up to
+  π/2, growing oscillation with period ≈ 4τ beyond. This reproduces the old
+  "calculation delay" t_c exactly (bit-identical on walled domains, ≤ 2e-7 on
+  the torus).
+- t_self = 0: x' = −A x + B x(t − t_nb). Hayes (1950): stable for every t_nb
+  when |B| ≤ A. That always holds here (|c| ≤ 1, |K̂| ≤ 1), so delaying only the
+  neighbours can never destabilise anything; the checkerboard (B = −A) is
+  marginal, with roots that approach the imaginary axis but never cross it. The
+  solver treats this case semi-implicitly, (u + a w)/(1 + a c), which also gives a
+  discrete maximum principle.
+
+Otherwise the solver finds the rightmost root numerically (Newton from a grid of
+starting points plus a bracketed real-root search, `src/solver/stability.ts`)
+for a scan of 41 values of B/A over the range present on the current grid, and
+shows the worst one live for each term: regime (monotone, damped, unstable
+oscillation, unstable real), the most unstable mode, λ and the period. The scan
+shows that the most unstable mode is **always one of the two ends** of the
+range: the longest waves (c, K̂ → 1) or the shortest (checkerboard c = −1,
+K̂ ≈ 0), never an intermediate wavelength. In units of A:
+
+| case | what goes unstable |
+| --- | --- |
+| t_self = 0, any t_nb | nothing (Hayes), checkerboard marginal |
+| t_self = t_nb = τ | shortest waves first: local checkerboard at 2Aτ = π/2, i.e. 8ντ/h² = π/2; kernel K̂ ≈ 0 at Sτ = π/2 |
+| t_self > t_nb + 1/A (roughly) | longest waves, **real** runaway: λ = A(1 − e^{−λ t_self}) + … has a positive real root. The point brakes against where it was while following where its neighbours are |
+| 0 < t_self < t_nb | the neighbour delay can destabilise the checkerboard, e.g. A t_self = 0.6, A t_nb ≥ 1.4 |
+| t_nb ≫ t_self | long waves oscillate unstably, e.g. A t_self = 1, A t_nb = 4: long waves 0.132 ± 1.33 i, checkerboard 0.068 ± 0.75 i (units of A) |
+
+**The checkerboard.** For the local term with equal delays, the checkerboard
+mode (u alternating sign from cell to cell) has the largest A − B = 2A = 8ν/h²
+and goes unstable first. The continuum delayed heat equation is ill-posed for
+any t_self = t_nb > 0 (A − B ∝ k² has no upper bound), so in the simulator the
+only cut-off is the grid, and the onset depends on h: refining the grid at fixed
+ν and τ makes it unstable. In the full solver without self-propulsion a
+delayed-local run with 8ντ/h² > π/2 grows grid-scale noise into a checkerboard
+(grid-noise measure 0.001 → 1.8 in 10 s). With self-propulsion (v₀ = 0.3) the
+moving fluid is advected semi-Lagrangian, whose bilinear interpolation damps
+grid-scale modes strongly, and the checkerboard stays suppressed (measure
+≈ 0.002). The panel warns when the checkerboard is the most unstable mode.
+
+**Numerics vs. theory** (full solver, single shear-wave or Fourier mode,
+ν = 0 except where the local term is tested, growth rate and frequency fitted
+from peaks and zero crossings):
+
+| term | t_self | t_nb | predicted λ (1/s) | simulated μ, ω |
+| --- | --- | --- | --- | --- |
+| kernel CS R = 0.15, S = 4, m = 4 (K̂ = 0.007) | 0.3 | 0.3 | −0.652 ± 4.784 i | −0.653, 4.783 |
+| ″ | 0.38 | 0.38 | −0.075 ± 4.085 i | −0.076, 4.085 |
+| ″ | 0.41 | 0.41 | +0.062 ± 3.870 i | +0.062, 3.870 |
+| ″ | 0.45 | 0.2 | +0.214 ± 3.609 i | +0.214, 3.608 |
+| ″ | 0.3 | 0.8 | −0.629 ± 4.826 i | −0.630, 4.825 |
+| ″ | 0.5 | 0.1 | +0.349 ± 3.334 i | +0.349, 3.334 |
+| kernel Gaussian R = 0.05, S = 4, m = 4 (K̂ = 0.454) | 0.3 | 0.6 | −0.686 ± 6.289 i | −0.667, 6.231 |
+| ″ | 0.45 | 0.2 | +0.109 ± 2.637 i | +0.108, 2.637 |
+| ″ | 0.7 | 0.3 | +0.534 ± 1.830 i | +0.534, 1.830 |
+| kernel Gaussian, m = 1 (K̂ = 0.952) | 0.42 | 0 | +2.258 (real) | +2.249 |
+| local A = 8/s, m = 6 (c = 0.5) | 0.3 | 0.3 | −0.635 ± 4.797 i | −0.636, 4.796 |
+| ″ | 0.1 | 0.3 | −1.397 ± 15.198 i | −1.402, 15.286 |
+| ″ | 0.22 | 0.15 | −0.600 ± 5.249 i | −0.601, 5.249 |
+| local A = 8/s, m = 12 (c = 0) | 0.2 | 0.2 | +0.066 ± 7.896 i | +0.060, 7.892 |
+| local A = 8/s, m = 1 | 0.3 | 0.1 | +2.137 (real) | +2.158 |
+| local A = 2/s, m = 4 (c = 0.75) | 0.5 | 2 | +0.170 ± 2.660 i | +0.178, 2.640 |
+| local checkerboard A = 4/s | 0.3 | 0.3 | +1.015 ± 5.812 i | +1.007, 5.819 |
+| ″ | 0.15 | 0.5 | +0.112 ± 4.974 i | +0.111, 4.973 |
+| ″ | 0 | 0.3 | −1.747 ± 6.369 i | −1.796, 6.295 (decays to 1e-8) |
+
+**Momentum.** On the torus the mean flow M obeys dM/dt = −A[M(t − t_self) −
+M(t − t_nb)], so M itself is not conserved when the delays differ, but
+Q = M + A ∫_{t−t_nb}^{t−t_self} M ds is (tested). With t_self > t_nb + 1/A the
+mean flow is itself in the real-runaway regime and a uniform drift can grow.
+
+**What you see.**
+
+- **〰️ Delay oscillations** (`O`): Cucker–Smale (R = 0.15, β = 1), S = 4/s,
+  t_self = t_nb = 0.42 s (S·τ = 1.68 > π/2), kernel only, weak self-propulsion
+  (τ = 2 s, v₀ = 0.3), periodic, no vorticity confinement, vorticity view, weak
+  random start. Predicted λ = +0.115 ± 3.81 i (period 1.65 s): the whole vortex
+  pattern reverses every half period (red and blue swap) and the HUD overlap
+  C(t) = ⟨u·u₀⟩/⟨u₀·u₀⟩ with the starting flow swings between ±1 (headless
+  browser: sign changes every ≈ 0.85 s, |C| up to 1.2, ⟨|u|⟩ 0.04 → 0.32 in
+  9 s, no NaN). Same physics as the old calculation-delay quick start.
+
+  ![Delay oscillations quick start: vorticity half a period apart (the pattern has reversed) and the HUD trace](docs/calc-delay-oscillations.png)
+- **🌊 Local viscosity delay** (`L`): no kernel, only ν∇² delayed with
+  t_self = 0.5 s, t_nb = 2 s, ν set from the grid so that A = 4ν/h² = 2/s,
+  self-propulsion τ = 0.2 s, v₀ = 0.3, periodic. The longest waves oscillate
+  unstably, λ = +0.265 ± 2.66 i (period 2.36 s); the overlap trace oscillates with
+  a period of about 2.3–2.4 s while self-propulsion keeps the speed bounded
+  (⟨|u|⟩ ≈ 0.32–0.37 in the browser).
+- **🪞 Own-velocity delay** (`N`): the `O` setup with t_self = 0.42 s, t_nb = 0 and
+  fast self-propulsion (τ = 0.1 s). The long waves run away (real root): the
+  fluid locks into a single aligned flock within about 6 s (φ = 1.00) whose
+  heading rotates steadily at ω ≈ 4 rad/s (ω = S sin(ω t_self), a period of
+  ≈ 1.6 s), with ⟨|u|⟩ ≈ 0.47 > v₀. With slow self-propulsion (τ = 2 s) it runs
+  into the speed guard instead. Swap the sliders (t_self = 0, t_nb = 0.42) and
+  the same flow is stable.
+
+![Local viscosity delay quick start (t ≈ 22 s): long-wave vortex pattern, the Delays panel shows both regime readouts and the history line](docs/delays-local.png)
+
+**Numerics of the delayed terms.** A delayed own velocity cannot be implicit, so
+with any delay the affected terms leave the implicit/Fourier path and use an
+explicit update with the delayed fields read at the step midpoint (second
+order):
+
+```
+u ← u + Δt·S [ (K * u)(t + Δt/2 − t_nb) − c·u(t + Δt/2 − t_self) ]          (kernel; Motsch–Tadmor a = SΔt/c)
+u ← u + Δt_s·ν/h² [ Σ_nb u(t_m − t_nb) − 4 u(t_m − t_self) ]   per sub-step (local)
+```
+
+- Reads later than the current time use the evolving field, so 0 < τ < Δt blends
+  continuously into explicit Euler (tested).
+- The local explicit update needs νΔt/h² ≲ 1/4; the solver sub-steps it to keep
+  νΔt_s/h² ≤ 0.2 (up to 32 sub-steps, the panel shows the count and warns if the
+  cap is hit). The kernel term warns when S·Δt > 1.
+- t_self = 0 with t_nb > 0 is semi-implicit (above). Because exactly 0 switches
+  scheme, there is an O(Δt) jump between t_self = 0 and a tiny t_self > 0.
+- History: full u and v fields in a ring buffer (Float32), one frame per step
+  up to 512 frames, linear interpolation in time, covering max(t_self, t_nb).
+  Total memory is capped at 64 MB; a large grid with a long delay coarsens the
+  frame interval instead. Until enough history exists the oldest frame is used.
+  Reset, grid and boundary changes, and setting both delays to 0 clear it.
+- A speed guard clamps each face velocity to ±10 after the delayed update.
+- With both delays 0 the old code runs unchanged, bit for bit (implicit
+  diffusion, exact Fourier kernel on the torus).
+
+References:
+
+- N. D. Hayes, "Roots of the transcendental equation associated with a certain
+  difference-differential equation", *J. London Math. Soc.* 25 (1950) 226–232.
+- R. Bellman & K. L. Cooke, *Differential-Difference Equations*, Academic Press
+  (1963).
+- R. Erban, J. Haškovec & Y. Sun, "A Cucker–Smale model with noise and delay",
+  *SIAM J. Appl. Math.* 76 (2016) 1535–1557.
+- C. Pignotti & E. Trélat, "Convergence to consensus of the general finite-
+  dimensional Cucker–Smale model with time-varying delays", *Commun. Math. Sci.*
+  16 (2018) 2053–2076.
+- C. Virágh et al., "Flocking algorithm for autonomous flying robots",
+  *Bioinspir. Biomim.* 9 (2014) 025012 (sensor and communication delays and the
+  oscillations they cause in robot flocks).
+
 
 ## Numerical method
 
@@ -517,15 +488,14 @@ a little (∝ amplitude²). A uniform flow and a uniform dye stay exactly unifor
   (or of the fractional multiplier), and a *Flocking quick start* button that
   selects Cucker–Smale, self-propulsion, periodic boundaries, and turns off
   vorticity confinement.
-- **Finite interaction speed** (in the same section): toggle (default off),
-  v_int slider (log scale 0.05–20 domain units/s plus ∞ = instant, default 1),
-  delay shells M (2–16, default 8), a live line with t_del,max, history frames
-  and memory, the shells and delay staircase drawn in the kernel plot, and a
-  *Delayed flocking quick start* button. These sit in a **Delay** box together
-  with the **calculation delay** t_c (0–2 s, default 0), which shows S·t_c and
-  the predicted regime and warns if S·Δt > 1. The kernel plot draws the total
-  delay t_c + r_out/v_int, and the info line shows the total maximum delay. A
-  *Delay oscillations quick start* button (`O`) sits with the other quick starts.
+- **Delays (own velocity vs neighbours)** section: own-velocity delay t_self
+  and neighbour delay t_nb (0–2 s each, default 0), check boxes to apply them
+  to the local viscosity and to the long-range term (both on by default), a
+  live stability readout per term (regime, most unstable mode, rightmost root
+  λ, period), the history line (frames, interval, memory) and warnings
+  (local sub-steps, explicit limit, S·Δt > 1, checkerboard). Quick starts:
+  *Delay oscillations* (`O`), *Local viscosity delay* (`L`), *Own-velocity
+  delay* (`N`).
 - **HUD time trace** (top left): φ, ⟨|u|⟩ and the overlap with the flow at the
   last reset / quick start, over the last 20 s of simulated time.
 - FPS, grid size, solver time per step, and (with a kernel or self-propulsion)
@@ -534,8 +504,8 @@ a little (∝ amplitude²). A uniform flow and a uniform dye stay exactly unifor
 - **Keyboard:** `Space` pause, `S` step, `R` reset, `V` cycle view, `A` toggle
   arrows, `B` cycle boundaries, `P` toggle self-propulsion, `T`
   active-turbulence quick start, `K` cycle kernel, `F` flocking quick start,
-  `D` toggle finite interaction speed, `L` delayed-flocking quick start,
-  `O` delay-oscillations quick start, `H` hide the panel.
+  `O` delay-oscillations quick start, `L` local-viscosity-delay quick start,
+  `N` own-velocity-delay quick start, `H` hide the panel.
 
 ![Active turbulence with the self-propulsion term](docs/selfprop.png)
 
@@ -566,8 +536,9 @@ src/
     poisson.ts       #   direct periodic pressure solver (FFT + tridiagonal)
     fft.ts           #   radix-2 / Bluestein FFT for any length
     kernels.ts       #   nonlocal viscosity / alignment kernels (spectral),
-                     #   retarded shells + delay history (finite v_int),
-                     #   calculation delay (explicit delayed update)
+                     #   explicit / semi-implicit delayed kernel update
+    delay.ts         #   FieldHistory: ring buffer of past u, v fields
+    stability.ts     #   rightmost root of λ + A e^{−λ t_self} − B e^{−λ t_nb}
     fluid.ts         #   FluidSolver: state + time stepping, splat/stir input
     index.ts
   render/
@@ -584,8 +555,7 @@ tests/
   selfprop.test.ts   # tests for the self-propulsion term
   periodic.test.ts   # tests for the periodic boundaries
   kernels.test.ts    # tests for the long-range viscosity / alignment kernels
-  delay.test.ts      # tests for the finite interaction speed (retarded kernels)
-  calcdelay.test.ts  # tests for the calculation delay (stability thresholds)
+  delays.test.ts     # tests for the own / neighbour delays (stability theory)
   lambert.ts         # Lambert W₀ for the delay characteristic equation
   fingerprint.ts     # bit-exact fingerprints of scripted runs
 index.html           # page layout, control panel, equations panel
@@ -632,39 +602,33 @@ across walls and obeys a max principle. Long runs with kernels, self-propulsion,
 and stirring stay finite on all boundary types. With kernel None, all four
 boundary types are bit-identical to commit 22fd8ba.
 
-`tests/delay.test.ts` checks the finite interaction speed. With the toggle
-off, or with v_int = ∞, eight kernel and boundary scenarios are bit-identical
-to commit dc86501. The shells partition the kernel exactly
-(K(0)δ + Σ Kₘ = K in real space, and to 10⁻¹² in Fourier space), their masses
-sum to 1, and every offset gets a delay of at least r/v_int (except the ultra-tail beyond r_tail, < 10⁻¹² of the mass). A huge v_int
-reproduces the walled instantaneous kernel to 10⁻¹³, and on the torus an
-independent semi-implicit reference to 10⁻¹² (the exact exponential to
-O((SΔt)²)). A uniform flow stays uniform. The light-cone test checks that an
-impulse is not felt at distance r before r/v_int − Δt and is felt by the delay
-of its shell plus one step (torus and walls). Momentum is conserved for a
-stationary history, and the discrete "momentum + in-flight momentum"
-invariant holds exactly after a kick. Runs with tiny v_int, large Δt, strong S,
-self-propulsion, and stirring stay finite on all boundaries. The memory cap
-coarsens the history instead of growing it. Reset, boundary changes, and
-switching the delay off clear the history, and start-up uses the current
-field.
+`tests/delays.test.ts` checks the own / neighbour delays (20 tests):
 
-`tests/calcdelay.test.ts` checks the calculation delay. With t_c = 0, every
-kernel/boundary scenario is bit-identical to commit 6a8ab36, both instantaneous
-and with finite v_int (v_int = 0.3, M = 8 and v_int = 0.05, M = 3). A single
-Fourier mode with v_int = ∞ decays monotonically for a t_c = 0.25, shows a damped
-oscillation for 1.0, and grows for 1.8. Its rate and frequency match
-W₀(−a t_c)/t_c within 3 % and 1 %. The full-solver shear wave changes from decay
-to growth around a_k t_c = π/2 (t_c = 0.38 decays, 0.41 grows), and the combined
-characteristic equation with finite v_int is matched too. The single-tap path
-(v_int = ∞) agrees with the shell path at huge v_int. A uniform flow is
-unchanged. An impulse is felt at distance r no earlier than t_c + r/v_int − Δt,
-and the point's own response comes after t_c. Momentum on the torus is
-conserved. In the oscillation regime with self-propulsion the instability
-grows (sign changes in the overlap, period ≈ 1.65 s, mean speed ×3) but stays
-bounded, and strongly unstable runs on all boundaries stay finite. t_c between
-0 and Δt varies the result continuously. The history covers t_c + r_tail/v_int.
-Reset, boundary changes and t_c → 0 clear it, and runs are reproducible.
+- *Theory:* the two-delay root finder reduces to Lambert W for equal delays and
+  to B + W(−Aτe^{−Bτ})/τ for t_nb = 0; with t_self = 0 every |B| ≤ A is stable
+  (Hayes); the local scan's worst mode is always an end of the range
+  (checkerboard or longest wave).
+- *Backward compatibility:* with both delays 0, all kernel and boundary
+  fingerprints are bit-identical to commit 6c811e2 (flags on or off). With
+  t_self = t_nb = t_c on the kernel, the old calculation-delay runs are
+  reproduced bit for bit on walled domains and to ≤ 2e-7 on the torus, and the
+  fitted growth rates and frequencies match the old ones to 1e-6.
+- *Kernel:* shear-wave growth rate and frequency follow the characteristic
+  equation for equal and unequal delays (CS, K̂ ≈ 0, and a narrow Gaussian,
+  K̂ = 0.45); t_nb = 0 with S·t_self > 1 gives a non-oscillating long-wave
+  runaway; t_self = 0 never grows (periodic and walls, Motsch–Tadmor on/off).
+- *Local viscosity:* single Fourier modes match the theory in rate and
+  frequency (decay, growth, real runaway, long-wave oscillation); the
+  checkerboard goes unstable at the Lambert-W rate for equal delays, stays
+  bounded for t_self = 0, and is destabilised by the neighbour delay alone for
+  0 < t_self < t_nb; sub-steps keep νΔt/h² > 1/4 stable.
+- *Invariants:* uniform flow unchanged; on the torus the delayed momentum
+  invariant M + A∫_{t−t_nb}^{t−t_self} M ds is conserved; unstable runs with
+  self-propulsion stay bounded and finite on every boundary (no NaN) and the
+  speed guard holds without it; fractional s = 1 equals the delayed local term;
+  t_self in (0, Δt] is continuous; the history covers max(t_self, t_nb), is
+  capped in memory, is cleared by reset, boundary change and delays → 0, and
+  runs are reproducible; the panel readouts identify the right modes.
 
 `tests/selfprop.test.ts` checks the self-propulsion term:
 
@@ -725,25 +689,24 @@ Vite is configured with `base: './'`, so the build works under
   development CPU (about 32 ms per step in total on a torus, 44 ms with
   no-slip walls). The FFTs run on the CPU.
 - The fractional Laplacian only works on fully periodic boundaries.
-- Finite interaction speed: on a torus it adds only about 2–3 ms per step
-  (205 × 128: 32 → 34 ms), because past spectra are stored. With walls it costs
-  one padded FFT per shell, about 3× the instantaneous kernel (42 → 124 ms per
-  step at M = 8). Use fewer shells there. The history can use up to 64 MB
-  (2 × 32 MB). Delays are rounded up to the shell's outer radius, and the time
-  interpolation can make a signal arrive up to one history interval early. The
-  fractional Laplacian has no real-space kernel, so it ignores the delay. The
-  light cone applies to the alignment term only, because the incompressibility
-  projection is instantaneous.
-- Calculation delay: the update is explicit, so keep S·Δt ≲ 1 (the panel
-  warns). The linear analysis ignores advection and self-propulsion. In a moving
-  flow the delayed term reads the velocity at a fixed point in space, so a mode
-  with k·U ≠ 0 picks up a phase k·U·t_c and its threshold shifts. Expect the
-  thresholds to hold for the onset from weak flow, not exactly in a fast,
-  developed flow. The speed guard (±10 per face component) is a safety net, not
-  physics. Cost: about 0.7 ms per step extra on a 219 × 128 torus with v_int = ∞
-  (39.8 → 40.5 ms on the dev CPU in Node), and 4 ms extra combined with
-  v_int = 0.3 (43.8 ms). With no-slip walls it costs 50 ms with t_c only and
-  61 ms combined, versus 46 ms instantaneous.
+- Delays: the delayed terms are explicit (local sub-stepped to νΔt/h² ≤ 0.2,
+  at most 32 sub-steps; keep S·Δt ≲ 1 for the kernel, the panel warns). With
+  t_self = t_nb the local term's stability limit 8ντ/h² = π/2 depends on the
+  grid (the continuum delayed heat equation is ill-posed), so the same ν and τ
+  can be stable on a coarse grid and unstable on a fine one. t_self = 0 is a
+  different (semi-implicit) scheme, so results jump by O(Δt) between 0 and a
+  tiny t_self. The fractional term is delayed only on the torus (it only exists
+  there). The linear analysis ignores advection and self-propulsion: in a
+  moving flow a mode with k·U ≠ 0 picks up a phase k·U·τ, and semi-Lagrangian
+  interpolation damps grid-scale modes (it suppresses the checkerboard in the
+  quick starts). Expect the thresholds to hold for the onset from weak flow.
+  The incompressibility projection is instantaneous. The history stores full
+  u, v fields (≤ 64 MB, ≤ 512 frames; coarser frame spacing beyond that). The
+  speed guard (±10 per face component) is a safety net, not physics. Cost on
+  219 × 128 in Node on the dev CPU: torus CS kernel 34.9 ms per step without
+  delay, 37.1 ms with t_self = t_nb = 0.42; local-only torus 17.6 ms without,
+  16.7 ms with t_self = 0.5, t_nb = 2 (the explicit update replaces the implicit
+  solve); no-slip with CS 46.7 vs 43.6 ms.
 - Vorticity confinement amplifies grid-scale noise in a strongly ordered
   (flocking) flow, so the flocking quick start switches it off.
 - Vorticity confinement is integrated explicitly, so εΔt is clamped to 0.2 for
