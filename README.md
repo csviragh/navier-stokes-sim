@@ -361,9 +361,10 @@ u ← u + Δt_s·ν/h² [ Σ_nb u(t_m − t_nb) − 4 u(t_m − t_self) ]   per 
   diffusion, exact Fourier kernel on the torus).
 
 **Delay read: Eulerian (fixed point) vs along the path (Lagrangian).** The
-*Delay read* selector sets *where* the past is read. The default in the app is
-**Along path (Lagrangian)**; the solver API default (`delayMode: 'eulerian'`)
-keeps scripts and tests bit-identical to earlier versions.
+*Delay read* selector sets *where* the past is read. The default, in the app
+and in the solver API (`delayMode: 'eulerian'`), is **Eulerian (fixed point)**:
+a particle reads the data at the neighbouring *point*, whatever fluid was there
+t_d ago. The along-path read is kept as an optional alternative.
 
 - *Eulerian (fixed point)* is the scheme above. It reads u(x, t − τ) at the
   grid point x. For a flock moving at **U**, a mode then picks up the Doppler

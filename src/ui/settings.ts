@@ -66,7 +66,7 @@ export const defaultSettings: Settings = {
   delayNb: 0,
   delayLocal: true,
   delayKernel: true,
-  delayMode: 'lagrangian',
+  delayMode: 'eulerian',
   dt: 1 / 60,
   iterations: 20,
   resolution: 128,
