@@ -19,6 +19,8 @@ export interface ControlCallbacks {
   onFlocking(): void;
   /** Quick start: flocking with a finite interaction speed (retarded alignment). */
   onDelayedFlocking(): void;
+  /** Quick start: calculation delay beyond the oscillation threshold S·t_c > π/2. */
+  onDelayOscillations(): void;
 }
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -52,7 +54,8 @@ function logSlider(
 function linSlider(
   id: string,
   key: 'vorticity' | 'dyeDissipation' | 'dt' | 'iterations' | 'resolution' | 'radius' | 'force'
-    | 'selfPropTau' | 'selfPropV0' | 'kernelRange' | 'kernelBeta' | 'kernelAlpha' | 'kernelS' | 'kernelShells',
+    | 'selfPropTau' | 'selfPropV0' | 'kernelRange' | 'kernelBeta' | 'kernelAlpha' | 'kernelS' | 'kernelShells'
+    | 'kernelCalcDelay',
   s: Settings, cb: ControlCallbacks, format: (x: number) => string,
   event: 'input' | 'change' = 'input',
 ): () => void {
@@ -120,6 +123,12 @@ export function bindControls(s: Settings, cb: ControlCallbacks): { sync(): void;
   syncs.push(linSlider('k-s', 'kernelS', s, cb, (x) => x.toFixed(2)));
   syncs.push(vIntSlider(s, cb));
   syncs.push(linSlider('k-shells', 'kernelShells', s, cb, (x) => String(x)));
+  syncs.push(linSlider('k-tcalc', 'kernelCalcDelay', s, cb, (x) => (x > 0 ? `${x.toFixed(2)} s` : '0 (off)')));
+  for (const id of ['k-tcalc', 'k-strength', 'dt']) $<HTMLInputElement>(id).addEventListener('input', () => updateRegime(s));
+  $<HTMLButtonElement>('delay-osc').addEventListener('click', () => {
+    cb.onDelayOscillations();
+    sync();
+  });
   const kernelDelay = $<HTMLInputElement>('k-delay');
   kernelDelay.addEventListener('change', () => {
     s.kernelDelay = kernelDelay.checked;
@@ -285,6 +294,10 @@ export function bindControls(s: Settings, cb: ControlCallbacks): { sync(): void;
         cb.onDelayedFlocking();
         sync();
         break;
+      case 'o':
+        cb.onDelayOscillations();
+        sync();
+        break;
     }
   });
 
@@ -310,11 +323,12 @@ function updateKernelUI(s: Settings): void {
   show('k-s-row', k === 'fractional');
   show('k-mt-row', conv);
   show('k-plot', k !== 'none');
-  show('k-delay-row', conv);
+  show('k-delay-sub', conv);
   show('k-vint-row', conv && s.kernelDelay);
   show('k-shells-row', conv && s.kernelDelay);
-  show('k-delay-info', conv && s.kernelDelay);
+  show('k-delay-info', conv && (s.kernelDelay || s.kernelCalcDelay > 0));
   updateDelayText(s);
+  updateRegime(s);
   $<HTMLElement>('k-strength-label').textContent = k === 'fractional' ? 'Strength ν_s (L^{2s}/s)' : 'Strength S (1/s)';
   const note = $<HTMLElement>('k-note');
   note.textContent = k === 'fractional' && s.walls !== 'periodic'
@@ -341,33 +355,47 @@ function drawKernel(s: Settings): void {
   const sFrac = Number(($<HTMLInputElement>('k-s')).value) || s.kernelS;
   const pad = 4;
   const conv = s.kernel === 'gaussian' || s.kernel === 'cucker-smale' || s.kernel === 'power';
-  const di = conv && s.kernelDelay ? delayInfo : null;
+  const di = conv && (s.kernelDelay || s.kernelCalcDelay > 0) ? delayInfo : null;
+  const showShells = !!di && s.kernelDelay && di.interaction;
   // r axis: 0 … 0.5, or out to the tail radius when the delay shells are shown
-  const rMax = di ? Math.min(Math.max(0.5, di.rTail), 1.5) : 0.5;
+  const rMax = showShells ? Math.min(Math.max(0.5, di!.rTail), 1.5) : 0.5;
   const X = (r: number) => pad + (r / rMax) * (W - 2 * pad);
   if (di) {
-    // shade the delay shells alternately; orange staircase = delay τ(r) = r_out / v_int
-    let r0 = 0;
-    di.rOuter.forEach((r1, m) => {
-      if (!(di.mass[m] > 0)) { r0 = Math.max(r0, r1); return; }
-      ctx.fillStyle = m === di.rOuter.length - 1 ? 'rgba(255,255,255,0.03)' : m % 2 ? 'rgba(63,169,255,0.10)' : 'rgba(63,169,255,0.20)';
-      ctx.fillRect(X(r0), pad, X(r1) - X(r0), H - 2 * pad);
-      r0 = r1;
-    });
+    // shade the delay shells alternately; orange = total delay
+    // τ(r) = t_c + r_out/v_int (constant offset t_c plus the shell staircase)
+    if (showShells) {
+      let r0 = 0;
+      di.rOuter.forEach((r1, m) => {
+        if (!(di.mass[m] > 0)) { r0 = Math.max(r0, r1); return; }
+        ctx.fillStyle = m === di.rOuter.length - 1 ? 'rgba(255,255,255,0.03)' : m % 2 ? 'rgba(63,169,255,0.10)' : 'rgba(63,169,255,0.20)';
+        ctx.fillRect(X(r0), pad, X(r1) - X(r0), H - 2 * pad);
+        r0 = r1;
+      });
+    }
     if (Number.isFinite(di.tauMax) && di.tauMax > 0) {
+      const Yd = (d: number) => H - pad - (d / di.tauMax) * (H - 2 * pad);
       ctx.beginPath();
       ctx.strokeStyle = 'rgba(255,160,60,0.9)';
       ctx.lineWidth = 1;
-      let prev = 0;
-      ctx.moveTo(X(0), H - pad);
-      di.rOuter.forEach((r1, m) => {
-        if (!(di.mass[m] > 0)) return;
-        const y = H - pad - (r1 / Math.max(...di.rOuter.filter((_, q) => di.mass[q] > 0))) * (H - 2 * pad);
-        ctx.lineTo(X(prev), y);
-        ctx.lineTo(X(r1), y);
-        prev = r1;
-      });
+      ctx.moveTo(X(0), Yd(di.tCalc));
+      if (showShells) {
+        const vInt = s.kernelVInt;
+        let prev = 0;
+        di.rOuter.forEach((r1, m) => {
+          if (!(di.mass[m] > 0)) return;
+          const y = Yd(di.tCalc + r1 / vInt);
+          ctx.lineTo(X(prev), y);
+          ctx.lineTo(X(r1), y);
+          prev = r1;
+        });
+      } else ctx.lineTo(X(rMax), Yd(di.tCalc));
       ctx.stroke();
+      if (di.tCalc > 0) {
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = 'rgba(255,160,60,0.45)';
+        ctx.beginPath(); ctx.moveTo(X(0), Yd(di.tCalc)); ctx.lineTo(X(rMax), Yd(di.tCalc)); ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
   }
   ctx.beginPath();
@@ -386,9 +414,11 @@ function drawKernel(s: Settings): void {
   ctx.font = '10px ui-monospace, monospace';
   ctx.fillText(s.kernel === 'fractional' ? '|k|^2s / |k|max^2s  vs |k|'
     : `K(r)/K(0),  r = 0 … ${rMax.toFixed(2)}`, pad + 2, 12);
-  if (di && Number.isFinite(di.tauMax)) {
+  if (di && Number.isFinite(di.tauMax) && di.tauMax > 0) {
     ctx.fillStyle = 'rgba(255,170,80,0.9)';
-    ctx.fillText(`delay r_out/v_int (max ${di.tauMax.toFixed(2)} s)`, pad + 2, 24);
+    ctx.fillText(showShells
+      ? `delay t_c + r_out/v_int (max ${di.tauMax.toFixed(2)} s)`
+      : `delay t_c = ${di.tCalc.toFixed(2)} s (all r)`, pad + 2, 24);
   }
   if (s.kernel !== 'fractional') {
     // mark R
@@ -403,16 +433,37 @@ function drawKernel(s: Settings): void {
 function updateDelayText(s: Settings): void {
   const el = $<HTMLElement>('k-delay-info');
   const di = delayInfo;
-  if (!s.kernelDelay) { el.textContent = ''; return; }
-  if (!Number.isFinite(s.kernelVInt)) {
-    el.textContent = 'v_int = ∞: instantaneous kernel (exact update, no history).';
+  const calc = s.kernelCalcDelay > 0;
+  if (!s.kernelDelay && !calc) { el.textContent = ''; return; }
+  if (!calc && !Number.isFinite(s.kernelVInt)) {
+    el.textContent = 'v_int = ∞, t_c = 0: instantaneous kernel (exact update, no history).';
     return;
   }
   if (!di) { el.textContent = ''; return; }
   const ms = (x: number) => (x * 1000).toFixed(1);
-  el.textContent =
-    `t_del,max = r_tail/v_int = ${di.tauMax.toFixed(2)} s · R_cut(99.5%) = ${di.rCut.toFixed(3)}, ` +
-    `r_tail = ${di.rTail.toFixed(3)} · history ${di.framesStored}/${di.capacity} frames ` +
+  const parts = di.interaction
+    ? `total max delay t_c + r_tail/v_int = ${di.tCalc.toFixed(2)} + ${di.tInteraction.toFixed(2)} = ${di.tauMax.toFixed(2)} s · ` +
+      `R_cut(99.5%) = ${di.rCut.toFixed(3)}, r_tail = ${di.rTail.toFixed(3)}`
+    : `total delay t_c = ${di.tauMax.toFixed(2)} s (v_int = ∞: one convolution)`;
+  el.textContent = `${parts} · history ${di.framesStored}/${di.capacity} frames ` +
     `(every ${ms(di.interval)} ms${di.interval > (lastSettings?.dt ?? 0) * 1.0001 ? ', memory-capped' : ''}) · ` +
     `${(di.bytes / 2 ** 20).toFixed(1)} MB`;
+}
+
+/**
+ * Predicted regime of the calculation delay from S·t_c. Per Fourier mode the
+ * linearised alignment is u_k' = −a_k u_k(t − t_c), a_k = S(1 − K̂(k)) ≤ S, so
+ * the short waves (K̂ → 0) reach the thresholds first: monotone for
+ * a t_c < 1/e, damped oscillation up to π/2, growing oscillation beyond.
+ */
+function updateRegime(s: Settings): void {
+  const el = $<HTMLElement>('k-regime');
+  const tc = s.kernelCalcDelay, S = s.kernelStrength, dt = s.dt;
+  if (!(tc > 0) || !(S > 0)) { el.textContent = 't_c = 0: own velocity current (no delay-driven oscillation).'; el.className = 'hint mono'; return; }
+  const x = S * tc;
+  const [name, cls] = x < 1 / Math.E ? ['monotone (< 1/e)', 'ok'] : x < Math.PI / 2 ? ['damped oscillation (1/e … π/2)', 'warn'] : ['unstable oscillation (> π/2)', 'bad'];
+  let txt = `S·t_c = ${x.toFixed(2)} → ${name} for short waves`;
+  if (S * dt > 1) txt += ` · ⚠ S·Δt = ${(S * dt).toFixed(2)} > 1: explicit update inaccurate, lower Δt or S`;
+  el.textContent = txt;
+  el.className = `hint mono regime-${cls}`;
 }

@@ -425,6 +425,146 @@ export class NonlocalOperator {
     void B;
   }
 
+  /**
+   * Alignment with a calculation (processing) delay t_c on top of the optional
+   * finite interaction speed:
+   *   f(x,t) = S ∫ K(r) ( u(y, t − t_c − r/v_int) − u(x, t − t_c) ) dy
+   * Both the neighbours' and the point's OWN velocity are t_c old, so the
+   * update cannot be implicit in u; it is explicit, with the delayed right-hand
+   * side evaluated at the step midpoint (second order in Δt):
+   *   u_new = u + a · ( w − c·u_d ),   a = S Δt  [Motsch–Tadmor: a = S Δt / c]
+   *   u_d   = u(x, t + Δt/2 − t_c),   w = Σ_taps K_tap * u(·, t + Δt/2 − t_c − τ_tap)
+   * (lookups later than t use the current field, so 0 < t_c < Δt/2 degrades
+   * smoothly to explicit Euler). With v_int = ∞ all shells collapse into one
+   * tap: w − u_d = (K̂ − 1)·û(t + Δt/2 − t_c), a single convolution. Otherwise
+   * the shells of shells(M) are used (self offset delayed by t_c only).
+   * Explicit: the undelayed limit needs a·max(1 − K̂) < 2, i.e. S Δt ≲ 1.
+   * The current field is pushed into `hist` afterwards.
+   */
+  applyCalcDelayed(
+    get: (i: number, j: number) => number, set: (i: number, j: number, x: number) => void,
+    dt: number, t: number, tCalc: number, vInt: number, M: number, hist: DelayHistory,
+    budgetBytes = 32 * 2 ** 20,
+  ): void {
+    const { n1, n2, A, re, im, params } = this;
+    const S = params.strength;
+    this.lastTaps = [];
+    if (!(S > 0) || !(dt > 0)) return;
+    if (params.kernel === 'fractional' || params.kernel === 'none') return;
+    const periodic = this.fullyPeriodic;
+    const finite = Number.isFinite(vInt) && vInt > 0;
+    // taps: (Fourier symbol, delay); the own-velocity term is handled separately
+    const taps: { sym: Float64Array; d: number; mass: number }[] = [];
+    let selfW = 0; // weight of terms that read u(x, t − t_c) in real space (walled)
+    if (finite) {
+      const sh = this.shells(M);
+      for (let m = 0; m < sh.rOuter.length; m++)
+        if (sh.mass[m] > 0) taps.push({ sym: sh.sym[m], d: tCalc + sh.rOuter[m] / vInt, mass: sh.mass[m] });
+      selfW = sh.selfWeight;
+    } else {
+      taps.push({ sym: this.sym, d: tCalc, mass: 1 });
+    }
+    let tauMax = tCalc;
+    for (const tp of taps) tauMax = Math.max(tauMax, tp.d);
+    hist.configure(periodic, periodic ? A * this.B : n1 * n2, dt, tauMax, budgetBytes);
+    this.load(get);
+    const old = new Float64Array(n1 * n2);
+    for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) old[i + n1 * j] = re[i + A * j];
+    const wre = (this.wre ??= new Float64Array(A * this.B));
+    const wim = (this.wim ??= new Float64Array(A * this.B));
+    wre.fill(0); wim.fill(0);
+    const frames = hist.frames;
+    const tapLog = this.lastTaps;
+    const tMid = t + 0.5 * dt;
+    const look = (d: number) => hist.lookup(Math.min(t, tMid - d), t);
+    const logTap = (l: { a: number; b: number; theta: number }, wgt: number) => {
+      tapLog.push({ age: l.a < 0 ? 0 : t - frames[l.a].t, weight: wgt * (1 - l.theta) });
+      if (l.theta > 0) tapLog.push({ age: l.b < 0 ? 0 : t - frames[l.b].t, weight: wgt * l.theta });
+    };
+    // own delayed velocity u_d (real space, all cases: needed for c·u_d and the self offset)
+    const ud = new Float64Array(n1 * n2);
+    if (periodic) {
+      this.fft2(true, n2); // re/im = spectrum of the current field
+      const cre = Float64Array.from(re), cim = Float64Array.from(im);
+      const spec = (k: number) => (k < 0 ? [cre, cim] : [frames[k].re, frames[k].im!]) as [ArrayLike<number>, ArrayLike<number>];
+      const accum = (K: Float64Array | null, coef: number, l: { a: number; b: number; theta: number }) => {
+        const [Ar, Ai] = spec(l.a);
+        const wa = 1 - l.theta, wb = l.theta;
+        const [Br, Bi] = wb > 0 ? spec(l.b) : [Ar, Ai];
+        for (let k = 0; k < wre.length; k++) {
+          const kk = K ? K[k] + coef : coef;
+          if (kk === 0) continue;
+          wre[k] += kk * (wa * Ar[k] + wb * Br[k]);
+          wim[k] += kk * (wa * Ai[k] + wb * Bi[k]);
+        }
+      };
+      const lSelf = look(tCalc);
+      if (!finite) {
+        // single tap: (K̂ − 1) · û(t + Δt/2 − t_c)
+        accum(this.sym, -1, lSelf);
+        logTap(lSelf, 1);
+      } else {
+        for (const tp of taps) { const l = look(tp.d); accum(tp.sym, 0, l); logTap(l, tp.mass); }
+        accum(null, selfW - 1, lSelf);
+        logTap(lSelf, selfW);
+      }
+      if (hist.wants(t)) { const f = hist.push(t); f.re.set(cre); f.im!.set(cim); }
+      re.set(wre); im.set(wim);
+      this.fft2(false, n2); // re = w − u_d
+      for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) {
+        const q = i + n1 * j;
+        set(i, j, old[q] + S * dt * re[i + A * j]);
+      }
+      hist.prune(t + dt);
+      return;
+    }
+    // walled: real-space frames; group taps by identical (frames, weight)
+    const field = (l: { a: number; b: number; theta: number }, out: Float64Array) => {
+      const fa = l.a < 0 ? null : frames[l.a].re, fb = l.b < 0 ? null : frames[l.b].re;
+      const wa = 1 - l.theta, wb = l.theta;
+      for (let q = 0; q < out.length; q++) {
+        const va = fa ? fa[q] : old[q];
+        out[q] = wb > 0 ? wa * va + wb * (fb ? fb[q] : old[q]) : va;
+      }
+    };
+    const lSelf = look(tCalc);
+    field(lSelf, ud);
+    const groups = new Map<string, { l: { a: number; b: number; theta: number }; syms: Float64Array[] }>();
+    for (const tp of taps) {
+      const l = look(tp.d);
+      const key = `${l.a}|${l.b}|${l.theta}`;
+      const g = groups.get(key);
+      if (g) g.syms.push(tp.sym); else groups.set(key, { l, syms: [tp.sym] });
+      logTap(l, tp.mass);
+    }
+    if (finite) logTap(lSelf, selfW);
+    const tmp = new Float64Array(n1 * n2);
+    for (const g of groups.values()) {
+      field(g.l, tmp);
+      re.fill(0); im.fill(0);
+      for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) re[i + A * j] = tmp[i + n1 * j];
+      this.fft2(true, n2);
+      for (let k = 0; k < wre.length; k++) {
+        let kk = 0;
+        for (const y of g.syms) kk += y[k];
+        wre[k] += kk * re[k];
+        wim[k] += kk * im[k];
+      }
+    }
+    if (hist.wants(t)) { const f = hist.push(t); for (let q = 0; q < old.length; q++) f.re[q] = old[q]; }
+    re.set(wre); im.set(wim);
+    this.fft2(false, n2);
+    const c = this.c!;
+    for (let j = 0; j < n2; j++) for (let i = 0; i < n1; i++) {
+      const q = i + n1 * j;
+      const w = re[i + A * j] + selfW * ud[q];
+      const ci = c[q];
+      const a = params.motschTadmor ? (S * dt) / ci : S * dt;
+      set(i, j, old[q] + a * (w - ci * ud[q]));
+    }
+    hist.prune(t + dt);
+  }
+
   /** Fourier symbol at index (a, b) (testing / plotting). */
   symbol(a: number, b: number): number { return this.sym[a + this.A * b]; }
 }

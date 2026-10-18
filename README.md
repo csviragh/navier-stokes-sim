@@ -8,7 +8,8 @@ walls (no-slip or free-slip), fully **periodic**, or periodic in x with walls in
 y (a channel). An optional **self-propulsion (active fluid)** term turns it
 into a model of active turbulence, and long-range alignment kernels (optionally
 with a **finite interaction speed**, i.e. retarded, time-delayed interaction)
-turn it into a flock.
+turn it into a flock. A **calculation delay** (the point's own velocity is
+delayed as well) makes the alignment over-correct, and the flow oscillates.
 
 **Try it live: <https://csviragh.github.io/navier-stokes-sim/>**
 
@@ -268,7 +269,7 @@ oscillations in any run. That fits the linear analysis, because with a current
 self term λ = −S + S K̂ e^{−λτ} has only stable roots for |K̂| < 1, and with
 delayed Cucker–Smale consensus results (Pignotti & Trélat 2018). Oscillations
 need the *reaction* itself to be delayed (the self term too), as in robot
-flocks with sensor and actuation latency. **📡 Delayed flocking quick start**
+flocks with sensor and actuation latency; that is the calculation delay below. **📡 Delayed flocking quick start**
 (`L`) sets this up with v_int = 0.1, M = 8, periodic boundaries, no vorticity
 confinement, and no dye fade. Watch the order parameter φ in the HUD.
 
@@ -281,6 +282,128 @@ flying robots", *Bioinspir. Biomim.* 9 (2014) 025012 (communication and sensor
 delays in real robot flocks).
 
 ![Delayed flocking quick start at t ≈ 7 s: swirling domains still aligning (φ = 0.51); the kernel plot shows the delay shells and the delay staircase](docs/delay-flocking.png)
+
+### Calculation delay and delay-induced oscillations
+
+The delay has two components. The **interaction delay** r/v_int (above) is the
+signal travel time. The **calculation delay** t_c is a constant processing time
+(sensing, computing, actuating) that applies to the neighbours' velocities *and*
+to the point's own velocity:
+
+```
+f(x, t) = S ∫ K(r) ( u(y, t − t_c − r/v_int) − u(x, t − t_c) ) dy
+```
+
+So a neighbour at distance r is seen t_c + r/v_int late, and the point's own
+velocity t_c late. Set it with the **Calculation delay t_c** slider (0–2 s,
+default 0 = off) in the *Delay* box of the kernel section. It works with or
+without the finite interaction speed. With v_int = ∞ every shell has the same
+delay t_c, so the term is a single convolution of u(t − t_c) and costs almost
+nothing extra.
+
+**Linear stability.** On the torus, linearised (no advection), each Fourier mode
+k of each velocity component obeys
+
+```
+û_k'(t) = −S [ û_k(t − t_c) − K(0) û_k(t − t_c) − Σ_m K̂_m(k) û_k(t − t_c − r_m/v_int) ]
+λ        = −S e^{−λ t_c} ( 1 − K(0) − Σ_m K̂_m(k) e^{−λ r_m/v_int} )           (characteristic equation)
+```
+
+where K(0) is the weight of the r = 0 offset and K̂_m the transform of shell m
+(continuum: 1 − ∫K(r) e^{−ik·r} e^{−λ r/v_int} dr). With v_int = ∞ this is
+
+```
+λ = −a_k e^{−λ t_c},   a_k = S (1 − K̂(k)),   so   λ = W₀(−a_k t_c) / t_c   (Lambert W, principal branch = rightmost root)
+```
+
+the classic equation x' = −a x(t − τ) (Hayes 1950). Its regimes:
+
+| a_k t_c | rightmost root | behaviour |
+|---|---|---|
+| < 1/e ≈ 0.368 | real, negative | monotone decay |
+| 1/e … π/2 | complex, Re λ < 0 | damped oscillation |
+| = π/2 | λ = ± i a_k | neutral oscillation, period 4 t_c |
+| > π/2 | complex, Re λ > 0 | growing oscillation |
+
+The uniform mode (k = 0, K̂ = 1) is never affected: the term vanishes for a
+uniform flow. Since a_k → S for short waves (K̂ → 0), the flow as a whole starts
+to oscillate once **S·t_c > π/2**. The panel shows S·t_c and the predicted regime
+(`monotone`, `damped oscillation`, `unstable oscillation`). Local viscosity adds
+an instantaneous damping b_k = νk², and then the threshold moves to
+t_c* = arccos(−b/a)/√(a² − b²) (stable for every t_c if b ≥ a, again Hayes). With t_c = 0
+the characteristic equation is λ = −S + S K̂ e^{−λτ}. The instantaneous damping S
+then outweighs the delayed feedback |S K̂| ≤ S, so it is stable for every
+interaction delay. That is why the interaction delay alone only slows flocking
+down. With t_c > 0, the interaction delay adds lag on top and can tip a stable
+t_c into instability (table below).
+
+**Numerics vs. theory** (full solver, 64 × 64 torus (v_int = ∞ rows; 48 × 48 for the
+finite-v_int rows), shear wave u_x = A sin(2π·4y),
+which is an exact Navier–Stokes solution, so only the alignment term acts;
+Cucker–Smale R = 0.15, S = 4, ν = 0; K̂ = 0.0075, a_k = 3.97, predicted onset
+t_c* = π/(2a_k) = 0.396 s):
+
+| t_c (s) | v_int | predicted λ (1/s) | simulated growth rate, ω |
+|---|---|---|---|
+| 0.35 | ∞ | −0.249 ± 4.324 i | −0.249, 4.323 |
+| 0.39 | ∞ | −0.026 ± 4.011 i | −0.026, 4.011 |
+| 0.40 | ∞ | +0.020 ± 3.939 i | +0.019, 3.939 |
+| 0.42 | ∞ | +0.101 ± 3.803 i | +0.101, 3.803 |
+| 0.45 | ∞ | +0.204 ± 3.616 i | +0.204, 3.616 |
+| 0.38 | 0.1 | +0.091 ± 4.055 i (v_int = ∞: −0.075) | +0.090, 4.050 |
+| 0.30 | 0.1 | −0.362 ± 4.480 i | −0.369, 4.481 |
+
+The onset is where the theory puts it, to within the 0.01 s spacing tested. Above
+it, the amplitude grows until the speed guard or self-propulsion stops it.
+
+**What you see.** **〰️ Delay oscillations quick start** (`O`) uses Cucker–Smale
+(R = 0.15, β = 1), S = 4/s, t_c = 0.42 s (S·t_c = 1.68 > π/2), v_int = ∞, weak
+self-propulsion (τ = 2 s, v₀ = 0.3), periodic boundaries, no vorticity
+confinement, and the vorticity view. It starts from weak random swirls
+(|u| ≈ 0.05). The prediction for the short waves is λ = 0.10 ± 3.80 i, a period
+of 1.65 s. The whole vortex pattern reverses its sense of rotation every half
+period, and red and blue swap. The HUD trace (top left, last 20 s) plots the polar
+order φ, the mean speed ⟨|u|⟩ and the **overlap** C(t) = ⟨u·u₀⟩/⟨u₀·u₀⟩ with
+the flow at the quick start. C swings between about +1 and −1. In the browser
+(219 × 128) the first zero crossings of C came at 0.43, 1.35, 2.23, 3.02, 3.77,
+4.47, 5.10 s: a period of about 1.8 s at first, shortening to about 1.3 s as the
+amplitude grows. That is close to the linear 1.65 s, but not equal, because the
+flow is nonlinear and has many modes. Meanwhile ⟨|u|⟩ grows from 0.04 to about
+0.43 within 8 s and then saturates near 0.4–0.55. Self-propulsion and advection
+bound it, and the oscillation keeps going with a less regular pattern. Without
+self-propulsion the growth continues until the speed guard caps it.
+
+![Delay oscillations quick start: vorticity half a period apart (overlap +1.12 at t = 3.50 s, −1.08 at t = 4.23 s; the pattern has reversed) and the HUD trace](docs/calc-delay-oscillations.png)
+
+**Numerics of the delayed term.** The own velocity is in the past, so the update
+can no longer be implicit in u. For t_c > 0 it is explicit, with the delayed
+right-hand side taken at the step midpoint (second order in Δt):
+
+```
+u ← u + a ( w − c·u_d ),   a = S Δt  (Motsch–Tadmor: S Δt / c)
+u_d = u(x, t + Δt/2 − t_c),   w = Σ_taps K_tap * u(·, t + Δt/2 − t_c − τ_tap)
+```
+
+Past fields come from the same history buffer (spectra on the torus, linearly
+interpolated in time), which now covers t_c + r_tail/v_int (just t_c when
+v_int = ∞). Lookups later than the current time use the current field, so
+0 < t_c < Δt blends smoothly into explicit Euler. The memory cap (32 MB per
+component, ≤ 512 frames) coarsens the frame spacing if needed. Reset, grid and
+boundary changes, or turning both delays off clear the history. Until the
+history covers the delay, the oldest frame is used. The explicit update needs
+S·Δt ≲ 1 (the panel warns above 1). With t_c = 0 the old code path runs
+unchanged, bit for bit (semi-implicit update, exact Fourier update when no delay
+is on). A **speed guard** clamps each face velocity to ±10 after the delayed
+update. It keeps a run-away instability finite, and in the quick start
+self-propulsion saturates the growth long before the guard is reached.
+
+References: N. D. Hayes, "Roots of the transcendental equation associated with a
+certain difference-differential equation", *J. London Math. Soc.* 25 (1950)
+226–232 (stability region of x' = a x + b x(t − τ)); R. Erban, J. Haškovec &
+Y. Sun, *SIAM J. Appl. Math.* 76 (2016) 1535–1557; C. Pignotti & E. Trélat,
+*Commun. Math. Sci.* 16 (2018) 2053–2076; C. Virágh et al., "Flocking algorithm
+for autonomous flying robots", *Bioinspir. Biomim.* 9 (2014) 025012 (models
+sensor and communication delays and the oscillations they cause in robot flocks).
 
 ## Numerical method
 
@@ -398,7 +521,13 @@ a little (∝ amplitude²). A uniform flow and a uniform dye stay exactly unifor
   v_int slider (log scale 0.05–20 domain units/s plus ∞ = instant, default 1),
   delay shells M (2–16, default 8), a live line with t_del,max, history frames
   and memory, the shells and delay staircase drawn in the kernel plot, and a
-  *Delayed flocking quick start* button.
+  *Delayed flocking quick start* button. These sit in a **Delay** box together
+  with the **calculation delay** t_c (0–2 s, default 0), which shows S·t_c and
+  the predicted regime and warns if S·Δt > 1. The kernel plot draws the total
+  delay t_c + r_out/v_int, and the info line shows the total maximum delay. A
+  *Delay oscillations quick start* button (`O`) sits with the other quick starts.
+- **HUD time trace** (top left): φ, ⟨|u|⟩ and the overlap with the flow at the
+  last reset / quick start, over the last 20 s of simulated time.
 - FPS, grid size, solver time per step, and (with a kernel or self-propulsion)
   the polar order parameter φ are shown in the HUD. A short
   explanation of the equations is built into the panel.
@@ -406,7 +535,7 @@ a little (∝ amplitude²). A uniform flow and a uniform dye stay exactly unifor
   arrows, `B` cycle boundaries, `P` toggle self-propulsion, `T`
   active-turbulence quick start, `K` cycle kernel, `F` flocking quick start,
   `D` toggle finite interaction speed, `L` delayed-flocking quick start,
-  `H` hide the panel.
+  `O` delay-oscillations quick start, `H` hide the panel.
 
 ![Active turbulence with the self-propulsion term](docs/selfprop.png)
 
@@ -437,7 +566,8 @@ src/
     poisson.ts       #   direct periodic pressure solver (FFT + tridiagonal)
     fft.ts           #   radix-2 / Bluestein FFT for any length
     kernels.ts       #   nonlocal viscosity / alignment kernels (spectral),
-                     #   retarded shells + delay history (finite v_int)
+                     #   retarded shells + delay history (finite v_int),
+                     #   calculation delay (explicit delayed update)
     fluid.ts         #   FluidSolver: state + time stepping, splat/stir input
     index.ts
   render/
@@ -455,6 +585,8 @@ tests/
   periodic.test.ts   # tests for the periodic boundaries
   kernels.test.ts    # tests for the long-range viscosity / alignment kernels
   delay.test.ts      # tests for the finite interaction speed (retarded kernels)
+  calcdelay.test.ts  # tests for the calculation delay (stability thresholds)
+  lambert.ts         # Lambert W₀ for the delay characteristic equation
   fingerprint.ts     # bit-exact fingerprints of scripted runs
 index.html           # page layout, control panel, equations panel
 .github/workflows/
@@ -516,6 +648,23 @@ self-propulsion, and stirring stay finite on all boundaries. The memory cap
 coarsens the history instead of growing it. Reset, boundary changes, and
 switching the delay off clear the history, and start-up uses the current
 field.
+
+`tests/calcdelay.test.ts` checks the calculation delay. With t_c = 0, every
+kernel/boundary scenario is bit-identical to commit 6a8ab36, both instantaneous
+and with finite v_int (v_int = 0.3, M = 8 and v_int = 0.05, M = 3). A single
+Fourier mode with v_int = ∞ decays monotonically for a t_c = 0.25, shows a damped
+oscillation for 1.0, and grows for 1.8. Its rate and frequency match
+W₀(−a t_c)/t_c within 3 % and 1 %. The full-solver shear wave changes from decay
+to growth around a_k t_c = π/2 (t_c = 0.38 decays, 0.41 grows), and the combined
+characteristic equation with finite v_int is matched too. The single-tap path
+(v_int = ∞) agrees with the shell path at huge v_int. A uniform flow is
+unchanged. An impulse is felt at distance r no earlier than t_c + r/v_int − Δt,
+and the point's own response comes after t_c. Momentum on the torus is
+conserved. In the oscillation regime with self-propulsion the instability
+grows (sign changes in the overlap, period ≈ 1.65 s, mean speed ×3) but stays
+bounded, and strongly unstable runs on all boundaries stay finite. t_c between
+0 and Δt varies the result continuously. The history covers t_c + r_tail/v_int.
+Reset, boundary changes and t_c → 0 clear it, and runs are reproducible.
 
 `tests/selfprop.test.ts` checks the self-propulsion term:
 
@@ -585,6 +734,16 @@ Vite is configured with `base: './'`, so the build works under
   fractional Laplacian has no real-space kernel, so it ignores the delay. The
   light cone applies to the alignment term only, because the incompressibility
   projection is instantaneous.
+- Calculation delay: the update is explicit, so keep S·Δt ≲ 1 (the panel
+  warns). The linear analysis ignores advection and self-propulsion. In a moving
+  flow the delayed term reads the velocity at a fixed point in space, so a mode
+  with k·U ≠ 0 picks up a phase k·U·t_c and its threshold shifts. Expect the
+  thresholds to hold for the onset from weak flow, not exactly in a fast,
+  developed flow. The speed guard (±10 per face component) is a safety net, not
+  physics. Cost: about 0.7 ms per step extra on a 219 × 128 torus with v_int = ∞
+  (39.8 → 40.5 ms on the dev CPU in Node), and 4 ms extra combined with
+  v_int = 0.3 (43.8 ms). With no-slip walls it costs 50 ms with t_c only and
+  61 ms combined, versus 46 ms instantaneous.
 - Vorticity confinement amplifies grid-scale noise in a strongly ordered
   (flocking) flow, so the flocking quick start switches it off.
 - Vorticity confinement is integrated explicitly, so εΔt is clamped to 0.2 for

@@ -29,6 +29,8 @@ export interface Settings {
   kernelVInt: number;
   /** Number of radial delay shells. */
   kernelShells: number;
+  /** Calculation delay t_c (s) of own and neighbour velocity; 0 = off. */
+  kernelCalcDelay: number;
   dt: number;
   iterations: number;
   /** Number of cells along the shorter side of the window. */
@@ -61,6 +63,7 @@ export const defaultSettings: Settings = {
   kernelDelay: false,
   kernelVInt: 1,
   kernelShells: 8,
+  kernelCalcDelay: 0,
   dt: 1 / 60,
   iterations: 20,
   resolution: 128,

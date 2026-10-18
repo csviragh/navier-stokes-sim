@@ -86,6 +86,14 @@ export interface FluidParams {
   kernelVInt: number;
   /** Number of radial delay shells M (plus one tail shell). */
   kernelShells: number;
+  /**
+   * Calculation (processing) delay t_c (s), applied to BOTH the neighbours'
+   * and the point's own velocity:
+   *   f = S ∫ K(r) (u(y, t − t_c − r/v_int) − u(x, t − t_c)) dy.
+   * 0 = off (the 6a8ab36 behaviour, bit-identical). Works with or without the
+   * finite interaction speed. Convolution kernels only.
+   */
+  kernelCalcDelay: number;
 }
 
 export const defaultParams: FluidParams = {
@@ -110,7 +118,16 @@ export const defaultParams: FluidParams = {
   kernelDelay: false,
   kernelVInt: 1,
   kernelShells: 8,
+  kernelCalcDelay: 0,
 };
+
+/**
+ * Speed guard of the calculation-delay path: after the explicit delayed
+ * update each face velocity is clamped to ±DELAY_SPEED_LIMIT (domain units/s).
+ * Only reached when the delay instability runs away without anything (e.g.
+ * self-propulsion) to saturate it; it keeps the fields finite.
+ */
+export const DELAY_SPEED_LIMIT = 10;
 
 /** Memory budget of the delay history, per velocity component (bytes). */
 export const DELAY_BUDGET_BYTES = 32 * 2 ** 20;
@@ -120,8 +137,16 @@ export interface DelayInfo {
   active: boolean;
   rCut: number;
   rTail: number;
-  /** Longest delay t_del,max (s). */
+  /** Longest delay t_c + r_tail/v_int (s). */
   tauMax: number;
+  /** Calculation delay t_c (s) and longest interaction delay r_tail/v_int (s; 0 if off). */
+  tCalc: number;
+  tInteraction: number;
+  /** Whether the finite interaction speed is in use. */
+  interaction: boolean;
+  /** S·t_c (dimensionless; regime boundaries 1/e and π/2) and S·Δt (explicit-update number). */
+  sTc: number;
+  sDt: number;
   /** History sampling interval (s). */
   interval: number;
   /** Frames needed / stored / capacity (per component). */
@@ -237,9 +262,21 @@ export class FluidSolver {
 
   /** True if the next step uses the retarded (finite-speed) kernel. */
   delayActive(): boolean {
+    return this.interactionDelayActive() || this.calcDelayActive();
+  }
+
+  /** Finite interaction speed in use (toggle on, finite v_int, convolution kernel). */
+  interactionDelayActive(): boolean {
     const p = this.params;
     return p.kernelDelay && (p.kernel === 'gaussian' || p.kernel === 'cucker-smale' || p.kernel === 'power')
       && Number.isFinite(p.kernelVInt) && p.kernelVInt > 0 && p.kernelStrength > 0;
+  }
+
+  /** Calculation delay t_c > 0 in use (convolution kernel). */
+  calcDelayActive(): boolean {
+    const p = this.params;
+    return (p.kernel === 'gaussian' || p.kernel === 'cucker-smale' || p.kernel === 'power')
+      && p.kernelCalcDelay > 0 && Number.isFinite(p.kernelCalcDelay) && p.kernelStrength > 0;
   }
 
   /** Shells, delays and history memory of the retarded kernel (for the UI). */
@@ -249,17 +286,21 @@ export class FluidSolver {
     const ops = this.kernelOperators();
     const su = ops.u.shells(p.kernelShells);
     const sv = ops.v.shells(p.kernelShells);
-    const vInt = Number.isFinite(p.kernelVInt) && p.kernelVInt > 0 ? p.kernelVInt : Infinity;
+    const interaction = p.kernelDelay && Number.isFinite(p.kernelVInt) && p.kernelVInt > 0;
+    const vInt = interaction ? p.kernelVInt : Infinity;
     let rMax = 0;
     for (const sh of [su, sv]) for (let m = 0; m < sh.rOuter.length; m++) if (sh.mass[m] > 0) rMax = Math.max(rMax, sh.rOuter[m]);
-    const tauMax = rMax / vInt;
+    const tCalc = p.kernelCalcDelay > 0 && Number.isFinite(p.kernelCalcDelay) ? p.kernelCalcDelay : 0;
+    const tInteraction = interaction ? rMax / vInt : 0;
+    const tauMax = tCalc + tInteraction;
     const h = this.hist.u;
     const interval = h.interval || p.dt;
     return {
       active: this.delayActive(),
-      rCut: su.rCut, rTail: su.rTail, tauMax,
+      rCut: su.rCut, rTail: su.rTail, tauMax, tCalc, tInteraction, interaction,
+      sTc: p.kernelStrength * tCalc, sDt: p.kernelStrength * p.dt,
       interval,
-      framesNeeded: Number.isFinite(tauMax) ? Math.ceil(tauMax / interval) + 1 : 0,
+      framesNeeded: tauMax > 0 ? Math.ceil(tauMax / interval) + 1 : 0,
       framesStored: h.frames.length,
       capacity: h.capacity,
       bytes: this.hist.u.bytes() + this.hist.v.bytes(),
@@ -514,6 +555,27 @@ export class FluidSolver {
     setVBoundary(g, v, walls);
   }
 
+  /**
+   * Calculation-delayed kernel (t_c > 0, optionally with finite v_int):
+   * explicit update, see NonlocalOperator.applyCalcDelayed, then the speed guard.
+   */
+  private applyKernelCalcDelayed(): void {
+    const g = this.grid;
+    const { u, v } = this;
+    const { dt, walls, kernelVInt, kernelShells, kernelCalcDelay } = this.params;
+    const ops = this.kernelOperators();
+    const t = this.time;
+    const vInt = this.interactionDelayActive() ? kernelVInt : Infinity;
+    const L = DELAY_SPEED_LIMIT;
+    const clamp = (x: number) => (x > L ? L : x < -L ? -L : x);
+    ops.u.applyCalcDelayed((i, j) => u[uIdx(g, i + 1, j + 1)], (i, j, x) => { u[uIdx(g, i + 1, j + 1)] = clamp(x); },
+      dt, t, kernelCalcDelay, vInt, kernelShells, this.hist.u, DELAY_BUDGET_BYTES);
+    ops.v.applyCalcDelayed((i, j) => v[vIdx(g, i + 1, j + 1)], (i, j, x) => { v[vIdx(g, i + 1, j + 1)] = clamp(x); },
+      dt, t, kernelCalcDelay, vInt, kernelShells, this.hist.v, DELAY_BUDGET_BYTES);
+    setUBoundary(g, u, walls);
+    setVBoundary(g, v, walls);
+  }
+
   /** Advance the simulation by one time step of length params.dt. */
   step(): void {
     const g = this.grid;
@@ -537,7 +599,8 @@ export class FluidSolver {
     }
 
     // 2b. nonlocal (long-range) viscosity / alignment
-    if (this.delayActive()) this.applyKernelDelayed();
+    if (this.calcDelayActive()) this.applyKernelCalcDelayed();
+    else if (this.interactionDelayActive()) this.applyKernelDelayed();
     else {
       // history only stays valid while it is recorded every step
       if (this.hist.u.frames.length || this.hist.v.frames.length) this.clearDelayHistory();

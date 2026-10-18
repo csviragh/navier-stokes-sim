@@ -10,6 +10,7 @@
   <body>
     <canvas id="sim" aria-label="Fluid simulation. Drag to stir the fluid."></canvas>
     <canvas id="overlay" aria-hidden="true"></canvas>
+    <canvas id="trace" aria-label="Time trace of the last 20 s: polar order, mean speed and overlap with the initial flow"></canvas>
 
     <div id="hud">
       <span id="fps">-- fps</span>
@@ -114,19 +115,29 @@
         </label>
         <label class="check" id="k-mt-row" title="Divide by the local kernel mass (only differs next to walls)"><input type="checkbox" id="k-mt" />
           Motsch–Tadmor normalisation</label>
-        <label class="check" id="k-delay-row" title="Toggle (D)"><input type="checkbox" id="k-delay" />
-          Finite interaction speed (retarded)</label>
-        <label class="slider" id="k-vint-row">Interaction speed v<sub>int</sub> <output id="k-vint-out"></output>
-          <input type="range" id="k-vint" min="-1.3" max="1.4" step="0.01" />
-        </label>
-        <label class="slider" id="k-shells-row" title="Radial shells with their own delay (+1 tail shell); cost ∝ shells on walled grids">Delay shells M <output id="k-shells-out"></output>
-          <input type="range" id="k-shells" min="2" max="16" step="1" />
-        </label>
+        <div class="subsection" id="k-delay-sub">
+          <h3>Delay</h3>
+          <h4>Calculation delay (own + neighbours)</h4>
+          <label class="slider" id="k-tcalc-row" title="Constant processing delay t_c applied to the point's own velocity and to every neighbour's">Calculation delay t<sub>c</sub> <output id="k-tcalc-out"></output>
+            <input type="range" id="k-tcalc" min="0" max="2" step="0.01" />
+          </label>
+          <p class="hint mono" id="k-regime"></p>
+          <h4>Interaction delay (signal speed)</h4>
+          <label class="check" id="k-delay-row" title="Toggle (D)"><input type="checkbox" id="k-delay" />
+            Finite interaction speed (adds r / v_int)</label>
+          <label class="slider" id="k-vint-row">Interaction speed v<sub>int</sub> <output id="k-vint-out"></output>
+            <input type="range" id="k-vint" min="-1.3" max="1.4" step="0.01" />
+          </label>
+          <label class="slider" id="k-shells-row" title="Radial shells with their own delay (+1 tail shell); cost ∝ shells on walled grids">Delay shells M <output id="k-shells-out"></output>
+            <input type="range" id="k-shells" min="2" max="16" step="1" />
+          </label>
+        </div>
         <canvas id="k-plot" width="240" height="80"></canvas>
         <p class="hint mono" id="k-delay-info"></p>
         <p class="hint" id="k-note"></p>
         <button id="flocking" class="wide" title="Cucker–Smale + self-propulsion on periodic boundaries (F)">🐦 Flocking quick start</button>
         <button id="delayed-flocking" class="wide" title="Flocking with a finite interaction speed v_int = 0.1 (L)">📡 Delayed flocking quick start</button>
+        <button id="delay-osc" class="wide" title="Calculation delay t_c = 0.42 s at S = 4 (S·t_c = 1.68 > π/2): the flow pattern oscillates (O)">〰️ Delay oscillations quick start</button>
         <p class="hint">Adds S∫K(|x−y|)(<b>u</b>(y) − <b>u</b>(x))dy to the local viscosity
           (∫K = 1, so S is a relaxation rate), or −ν_s(−Δ)<sup>s</sup><b>u</b>. Exact in Fourier
           space on periodic boundaries; with walls a zero-padded (non-wrapping) convolution.</p>
@@ -135,6 +146,11 @@
           spreads no faster than v<sub>int</sub> (light cone; the short side is crossed in
           1/v<sub>int</sub> s). Slider maximum = ∞ recovers the instantaneous kernel. Speeds in
           domain units/s, like v₀.</p>
+        <p class="hint"><b>Calculation delay</b> t<sub>c</sub>: every point reacts to
+          <b>u</b>(y, t − t<sub>c</sub> − r/v<sub>int</sub>) − <b>u</b>(x, t − t<sub>c</sub>), i.e. its own
+          velocity is t<sub>c</sub> old too (processing / sensor latency). Beyond S·t<sub>c</sub> = π/2
+          the alignment over-corrects and the flow oscillates with growing amplitude; the HUD trace
+          (top left) shows the overlap with the initial flow swinging between + and −.</p>
       </section>
 
       <section>
@@ -217,6 +233,24 @@
           "in-flight" part S Σ μ<sub>m</sub> ∫<sub>t−τ<sub>m</sub></sub><sup>t</sup> <b>u</b> ds is conserved.
           Pressure still acts instantly (the fluid is incompressible), so the light cone
           applies to the alignment interaction, not to the whole flow.</p>
+        <p><b>Calculation delay</b> (optional): a constant processing time t<sub>c</sub> that applies to
+          the point's <i>own</i> velocity as well as to its neighbours', on top of the interaction delay:</p>
+        <div class="eq"><b>f</b><sub>K</sub>(x, t) = S ∫ K(r) (<b>u</b>(y, t − t<sub>c</sub> − r/v<sub>int</sub>) − <b>u</b>(x, t − t<sub>c</sub>)) dy</div>
+        <p>Linearised per Fourier mode (v<sub>int</sub> = ∞) this is
+          û<sub>k</sub>′(t) = −a<sub>k</sub> û<sub>k</sub>(t − t<sub>c</sub>), a<sub>k</sub> = S(1 − K̂(k)),
+          with solutions e<sup>λt</sup>, λ = −a<sub>k</sub>e<sup>−λt<sub>c</sub></sup>, i.e.
+          λ = W₀(−a<sub>k</sub>t<sub>c</sub>)/t<sub>c</sub> (Lambert W). Regimes (Hayes 1950):
+          a<sub>k</sub>t<sub>c</sub> &lt; 1/e monotone decay; 1/e … π/2 damped oscillation;
+          &gt; π/2 growing oscillation, with frequency ω = a<sub>k</sub> at the threshold. Since
+          a<sub>k</sub> → S for short waves (K̂ → 0), the flow oscillates once S·t<sub>c</sub> &gt; π/2.
+          The uniform mode (k = 0) is never affected (the term vanishes for uniform flow). With a finite
+          v<sub>int</sub>: λ = −S e<sup>−λt<sub>c</sub></sup>(1 − K(0) − Σ<sub>m</sub> K̂<sub>m</sub>(k) e<sup>−λ r<sub>m</sub>/v<sub>int</sub></sup>).
+          With t<sub>c</sub> = 0 the own velocity is current and λ = −S + S K̂ e<sup>−λτ</sup> has only
+          stable roots: that is why the interaction delay alone only slows
+          flocking down. Numerically the update is explicit (the own velocity is in the past), with the
+          delayed right-hand side taken at the step midpoint: <b>u</b> ← <b>u</b> + SΔt(<b>w</b> − c<b>u</b><sub>d</sub>);
+          it needs S·Δt ≲ 1. A speed guard (|u| ≤ 10) keeps a run-away instability finite;
+          self-propulsion normally saturates it first.</p>
         <p><b>Boundaries</b>: <i>no-slip</i> walls (fluid sticks to the walls, u = 0),
           <i>free-slip</i> walls (no flow through the walls, but it slides along them),
           <i>periodic</i> (a torus: whatever leaves on one side re-enters on the opposite
@@ -237,7 +271,7 @@
         <p>Shortcuts: <kbd>Space</kbd> pause, <kbd>S</kbd> step, <kbd>R</kbd> reset,
           <kbd>V</kbd> next view, <kbd>A</kbd> arrows, <kbd>B</kbd> next boundary, <kbd>P</kbd> self-propulsion,
           <kbd>T</kbd> active-turbulence quick start, <kbd>K</kbd> next kernel, <kbd>F</kbd> flocking quick start, <kbd>D</kbd> finite interaction speed,
-          <kbd>L</kbd> delayed-flocking quick start, <kbd>H</kbd> hide panel.</p>
+          <kbd>L</kbd> delayed-flocking quick start, <kbd>O</kbd> delay-oscillations quick start, <kbd>H</kbd> hide panel.</p>
       </details>
     </aside>
 

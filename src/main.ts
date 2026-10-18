@@ -3,7 +3,7 @@
  * together and runs the animation loop.
  */
 import './style.css';
-import { FluidSolver, type FluidParams } from './solver';
+import { FluidSolver, uIdx, vIdx, type FluidParams } from './solver';
 import { Renderer } from './render/renderer';
 import { hexToRgb, hsv } from './render/colormaps';
 import { bindControls } from './ui/controls';
@@ -29,10 +29,27 @@ const settings: Settings = { ...defaultSettings };
  */
 const DELAYED_FLOCKING: Partial<Settings> = {
   kernel: 'cucker-smale', kernelStrength: 10, kernelRange: 0.15, kernelBeta: 1, kernelMT: false,
-  kernelDelay: true, kernelVInt: 0.1, kernelShells: 8,
+  kernelDelay: true, kernelVInt: 0.1, kernelShells: 8, kernelCalcDelay: 0,
   vorticity: 0, selfPropulsion: true, walls: 'periodic',
   // keep the dye so the swirling domains stay visible while they slowly align
   dyeDissipation: 0,
+};
+
+/**
+ * "Delay oscillations" quick start: Cucker–Smale alignment (R = 0.15) with a
+ * calculation delay t_c = 0.42 s at S = 4, so S·t_c = 1.68 > π/2. Short-wave
+ * modes (K̂ ≈ 0, a_k ≈ S) obey u' ≈ −S u(t − t_c), whose rightmost root
+ * λ = W₀(−S t_c)/t_c = 0.10 ± 3.80i s⁻¹ grows slowly while oscillating with a
+ * period of 1.65 s: the whole vortex pattern reverses its sense of rotation
+ * about every 0.8 s. Weak self-propulsion (τ = 2 s, v₀ = 0.3) saturates the
+ * growth into a sustained oscillation (overlap trace swings ±1, ⟨|u|⟩ ≈ 0.35).
+ * Interaction delay off (v_int = ∞), so the cost is one convolution per step.
+ */
+const DELAY_OSCILLATIONS: Partial<Settings> = {
+  kernel: 'cucker-smale', kernelStrength: 4, kernelRange: 0.15, kernelBeta: 1, kernelMT: false,
+  kernelDelay: false, kernelCalcDelay: 0.42,
+  vorticity: 0, selfPropulsion: true, selfPropTau: 2, selfPropV0: 0.3, walls: 'periodic',
+  viscosity: 1e-5, dyeDissipation: 0,
 };
 
 /** Polar order parameter φ = |⟨u⟩| / ⟨|u|⟩ (1 = perfectly aligned flock); needs updateDiagnostics(). */
@@ -73,6 +90,7 @@ function solverParams(s: Settings): Partial<FluidParams> {
     kernelDelay: s.kernelDelay,
     kernelVInt: s.kernelVInt,
     kernelShells: s.kernelShells,
+    kernelCalcDelay: s.kernelCalcDelay,
   };
 }
 
@@ -86,6 +104,83 @@ function gridSize(resolution: number): [number, number] {
     : [resolution, Math.round(resolution / aspect)];
 }
 
+/**
+ * HUD time trace (last TRACE_SPAN s of simulated time): polar order φ, mean
+ * speed ⟨|u|⟩ and the overlap C(t) = ⟨u·u_ref⟩/⟨u_ref·u_ref⟩ with the flow at
+ * the last reset / quick start (C swings between ± when the flow pattern
+ * reverses, e.g. delay oscillations).
+ */
+const TRACE_SPAN = 20;
+const traceCanvas = document.getElementById('trace') as HTMLCanvasElement;
+const trace = {
+  t: [] as number[], phi: [] as number[], speed: [] as number[], overlap: [] as number[],
+  refU: null as Float32Array | null, refV: null as Float32Array | null, refNorm: 0,
+  reset(s: FluidSolver) {
+    this.t = []; this.phi = []; this.speed = []; this.overlap = [];
+    this.refU = Float32Array.from(s.u); this.refV = Float32Array.from(s.v);
+    let n = 0;
+    for (const x of this.refU) n += x * x;
+    for (const x of this.refV) n += x * x;
+    this.refNorm = n;
+  },
+  sample(s: FluidSolver) {
+    const g = s.grid;
+    if (this.t.length && s.time <= this.t[this.t.length - 1]) return;
+    let mu = 0, mv = 0, sp = 0;
+    for (let j = 1; j <= g.ny; j++) for (let i = 1; i <= g.nx; i++) {
+      const k = i + g.stride * j;
+      mu += s.uc[k]; mv += s.vc[k]; sp += Math.hypot(s.uc[k], s.vc[k]);
+    }
+    let c = 0;
+    const ru = this.refU, rv = this.refV;
+    if (ru && rv && ru.length === s.u.length && this.refNorm > 0) {
+      for (let j = 1; j <= g.ny; j++) for (let i = 1; i <= g.nx; i++) {
+        const a = uIdx(g, i, j), b = vIdx(g, i, j);
+        c += s.u[a] * ru[a] + s.v[b] * rv[b];
+      }
+      c /= this.refNorm;
+    }
+    this.t.push(s.time); this.phi.push(sp > 0 ? Math.hypot(mu, mv) / sp : 0);
+    this.speed.push(sp / (g.nx * g.ny)); this.overlap.push(c);
+    while (this.t.length > 2 && this.t[0] < s.time - TRACE_SPAN) {
+      this.t.shift(); this.phi.shift(); this.speed.shift(); this.overlap.shift();
+    }
+  },
+  draw() {
+    const cv = traceCanvas;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const W = Math.round(cv.clientWidth * dpr), H = Math.round(cv.clientHeight * dpr);
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+    const ctx = cv.getContext('2d');
+    if (!ctx || !this.t.length) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = cv.clientWidth, h = cv.clientHeight, top = 14, bot = h - 4;
+    ctx.clearRect(0, 0, w, h);
+    const t1 = this.t[this.t.length - 1], t0 = t1 - TRACE_SPAN;
+    const X = (t: number) => 4 + ((t - t0) / TRACE_SPAN) * (w - 8);
+    const cOver = Math.max(1, ...this.overlap.map(Math.abs));
+    const sMax = Math.max(1e-6, ...this.speed);
+    const Y = (y: number) => bot - y * (bot - top); // y ∈ [0, 1]
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.beginPath(); ctx.moveTo(4, Y(0.5)); ctx.lineTo(w - 4, Y(0.5)); ctx.stroke();
+    const line = (ys: number[], f: (y: number) => number, color: string) => {
+      ctx.strokeStyle = color; ctx.lineWidth = 1.3; ctx.beginPath();
+      ys.forEach((y, k) => { const px = X(this.t[k]), py = Y(f(y)); if (k) ctx.lineTo(px, py); else ctx.moveTo(px, py); });
+      ctx.stroke();
+    };
+    line(this.overlap, (y) => 0.5 + 0.5 * y / cOver, '#7ee787');
+    line(this.speed, (y) => y / sMax, '#ffa657');
+    line(this.phi, (y) => y, '#58a6ff');
+    ctx.font = '10px ui-monospace, monospace';
+    const lab = (txt: string, x: number, col: string) => { ctx.fillStyle = col; ctx.fillText(txt, x, 10); };
+    lab(`φ ${this.phi[this.phi.length - 1].toFixed(2)}`, 6, '#58a6ff');
+    lab(`⟨|u|⟩ ${this.speed[this.speed.length - 1].toFixed(3)}`, 62, '#ffa657');
+    lab(`overlap ${this.overlap[this.overlap.length - 1].toFixed(2)}`, 150, '#7ee787');
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.fillText(`${TRACE_SPAN} s`, w - 30, h - 6);
+  },
+};
+
 let solver = createSolver();
 
 function createSolver(previous?: FluidSolver): FluidSolver {
@@ -93,6 +188,7 @@ function createSolver(previous?: FluidSolver): FluidSolver {
   const s = new FluidSolver(nx, ny, solverParams(settings));
   if (previous) s.resampleFrom(previous);
   else seedDemo(s);
+  trace.reset(s);
   return s;
 }
 
@@ -167,6 +263,7 @@ const controls = bindControls(settings, {
   onReset() {
     solver.reset();
     seedDemo(solver);
+    trace.reset(solver);
     renderer.resetScales();
   },
   onActiveTurbulence() {
@@ -180,6 +277,7 @@ const controls = bindControls(settings, {
     solver.setParams(solverParams(settings));
     solver.reset();
     solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05 * Math.max(settings.selfPropV0, 0.1) / 0.5);
+    trace.reset(solver);
     renderer.resetScales();
   },
   onFlocking() {
@@ -188,6 +286,7 @@ const controls = bindControls(settings, {
     settings.kernelStrength = 3;
     settings.kernelRange = 0.05;
     settings.kernelBeta = 1;
+    settings.kernelCalcDelay = 0;
     // vorticity confinement amplifies grid-scale noise once the flow is ordered
     settings.vorticity = 0;
     settings.selfPropulsion = true;
@@ -196,6 +295,7 @@ const controls = bindControls(settings, {
     solver.setParams(solverParams(settings));
     solver.reset();
     solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05 * Math.max(settings.selfPropV0, 0.1) / 0.5);
+    trace.reset(solver);
     renderer.resetScales();
   },
   onDelayedFlocking() {
@@ -206,6 +306,19 @@ const controls = bindControls(settings, {
     solver.setParams(solverParams(settings));
     solver.reset();
     solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05 * Math.max(settings.selfPropV0, 0.1) / 0.5);
+    trace.reset(solver);
+    renderer.resetScales();
+  },
+  onDelayOscillations() {
+    // Quick start: calculation delay beyond the oscillation threshold, see DELAY_OSCILLATIONS.
+    Object.assign(settings, DELAY_OSCILLATIONS);
+    // vorticity shows the reversals best (vortices flip colour every half period)
+    settings.view = 'vorticity';
+    settings.paused = false;
+    solver.setParams(solverParams(settings));
+    solver.reset();
+    solver.seedActiveTurbulence((Math.random() * 2 ** 32) >>> 0, 0.05);
+    trace.reset(solver);
     renderer.resetScales();
   },
 });
@@ -227,6 +340,8 @@ function frame(now: number): void {
   else applyInput(); // paint dye / stir while paused; it evolves on Play/Step
   solver.updateDiagnostics();
   const info = renderer.render(solver, settings.view, settings.arrows);
+  trace.sample(solver);
+  trace.draw();
 
   frames++;
   if (now - fpsTime >= 500) {
@@ -249,7 +364,7 @@ requestAnimationFrame(frame);
 // Handy for debugging from the console and for automated smoke tests.
 declare global {
   interface Window {
-    fluid: { readonly solver: FluidSolver; settings: Settings };
+    fluid: { readonly solver: FluidSolver; settings: Settings; trace: typeof trace };
   }
 }
 window.fluid = {
@@ -257,4 +372,5 @@ window.fluid = {
     return solver;
   },
   settings,
+  trace,
 };
