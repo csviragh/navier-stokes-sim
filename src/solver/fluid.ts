@@ -540,16 +540,15 @@ export class FluidSolver {
   /**
    * Copy the state of another solver (possibly with a different grid size)
    * into this one by bilinear resampling, then re-project. Used when the
-   * resolution or window aspect ratio changes.
+   * resolution changes.
    */
   resampleFrom(src: FluidSolver): void {
     const g = this.grid;
     const sg = src.grid;
     const sx = sg.nx / g.nx;
     const sy = sg.ny / g.ny;
-    // Velocities are in domain units/s and the shorter domain side is always 1,
-    // so they carry over unchanged (a changed aspect ratio simply stretches the
-    // old state onto the new domain).
+    // Velocities are in domain units/s and the (square) domain side is always 1,
+    // so they carry over unchanged.
     // On periodic axes the source is sampled with wrap-around (seam faces too).
     const sw = isPeriodic(src.params.walls) ? src.params.walls : undefined;
     for (let j = 1; j <= g.ny; j++)
@@ -916,13 +915,15 @@ export class FluidSolver {
    * radians, 0 = +x) plus a Gaussian-tapered patch of random swirls. ψ_patch =
    * env(x)·Σ vortices is a stream function, so the field stays exactly
    * divergence free (periodic, nearest image). The seed sets the patch centre
-   * and the swirl positions / signs. sigma = patch radius (cells, Gaussian σ),
-   * amplitude = swirl speed scale relative to v0, core = swirl core radius (cells).
+   * and the swirl positions / signs. sigma = patch radius (Gaussian σ, DOMAIN units;
+   * default 0.065 = 16.6 cells at h = 1/256, giving ⟨cos⟩ ≈ 0.95 in the unit square),
+   * amplitude = swirl speed scale relative to v0, core = swirl core radius
+   * (domain units; default 0.0347 ≈ 2.5 cells at h = 1/72).
    */
   seedOrderedPerturbation(seed = 1, opts: { v0?: number; heading?: number; sigma?: number; amplitude?: number; core?: number; density?: number } = {}): void {
     const g = this.grid; const { nx, ny, h } = g;
     const v0 = opts.v0 ?? this.params.selfPropV0, heading = opts.heading ?? 0;
-    const sigma = opts.sigma ?? 6.6, amp = (opts.amplitude ?? 2) * v0, core = opts.core ?? 2.5, density = opts.density ?? 1;
+    const sigma = (opts.sigma ?? 0.065) / h, amp = (opts.amplitude ?? 2) * v0, core = (opts.core ?? 2.5 / 72) / h, density = opts.density ?? 1;
     let a = seed >>> 0;
     const rand = (): number => {
       a = (a + 0x6d2b79f5) >>> 0; let t = a;

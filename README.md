@@ -50,7 +50,7 @@ f_active = −(1/τ) (|u| − v₀) · u/|u|
 ```
 
 - **τ** (relaxation time, s) sets how quickly the local speed adapts;
-- **v₀** (target speed, domain units/s, the short side of the box is 1) is the
+- **v₀** (target speed, domain units/s, the square box has side 1) is the
   speed the fluid "wants" to move at;
 - **u/|u|** is the local unit vector of the flow, so the term only changes the
   *speed*, never the *direction*.
@@ -723,7 +723,7 @@ To reproduce:
 
 ```bash
 npx esbuild scripts/delay-sweep.ts --bundle --platform=node --outfile=/tmp/delay-sweep.js
-node /tmp/delay-sweep.js --out /tmp/sweep --jobs 8          # 128×72, 41 delays × 3 seeds × 120 s
+node /tmp/delay-sweep.js --out /tmp/sweep --jobs 8 --nx 128 --ny 72   # (historical) 128×72, 41 delays × 3 seeds × 120 s
 npx esbuild scripts/kernel-symbols.ts --bundle --platform=node --outfile=/tmp/ks.js && node /tmp/ks.js /tmp/sweep/kernel_symbols.json
 python3 scripts/delay-sweep-theory.py /tmp/sweep/kernel_symbols.json /tmp/sweep/theory_advected.json   # numpy, scipy
 python3 scripts/plot-delay-sweep.py /tmp/sweep              # matplotlib
@@ -765,10 +765,10 @@ Dynamics for Games", GDC 2003) with operator splitting. Each time step Δt runs:
 cell centres, u on vertical faces, and v on horizontal faces. The discrete
 divergence, gradient, and Laplacian are mutually consistent, so the projection
 drives the discrete divergence to zero, up to solver tolerance. It also avoids
-the checkerboard pressure modes of a collocated grid. The shorter side of the
-domain has length 1. The default grid has **128 cells on the short side**, and
-the long side follows the window's aspect ratio (e.g. 228 × 128 on a 16:9
-window).
+the checkerboard pressure modes of a collocated grid. The domain is a
+**square of side 1** and the grid is always square: *resolution* cells per side
+(default **256 × 256**, h = 1/256). The canvas is drawn as a centred square
+(side = min(window width, height)), independent of the window's aspect ratio.
 
 **Boundaries.** Choose them in the *Boundaries* menu (key `B` cycles):
 
@@ -1151,6 +1151,28 @@ Vite is configured with `base: './'`, so the build works under
 - **3D** solver (the grid/ops separation is designed to make this a parallel
   module) with volume rendering.
 - Move the solver into a Web Worker to keep the UI thread free.
+
+### Square box (current default): 256 × 256, side 1
+
+Since this change both the app and `scripts/delay-sweep.ts` use a **square
+periodic box of side 1**. The sweep defaults to `--n 256` (≡ `--nx 256 --ny 256`,
+still overridable; h = 1/n). All physical parameters (S, R, τ, v₀, ν, delays)
+are in domain units and unchanged. The earlier sweeps below used 128 × 72 cells
+with h = 1/72, i.e. a 1.78 × 1 box.
+
+- `--psigma` (ordered + perturbation patch, Gaussian σ) is now in **domain
+  units** (it was cells). Default **0.065** = 16.6 cells at 256², which gives
+  ⟨cos θ_ij⟩ ≈ 0.95 right after the kick, matching the old 128 × 72 setup
+  (σ = 6.6 cells = 0.092 there). Keeping σ = 0.092 in the smaller square box
+  would cover a larger fraction of it and give ⟨cos⟩ ≈ 0.91. The swirl core is
+  0.0347 (= 2.5 cells at h = 1/72) and the amplitude is 2·v₀. The heading is +x.
+- **Doppler resonance.** With the Eulerian read the delayed term picks up the
+  phase k·U·t. In the unit box with U = v₀ = 0.5 along +x, the lowest x-mode
+  (k = 2π) gets k·U·t = 2π at **t = L/U = 2 s**, so expect a resonance at the
+  top end of the 0–2 s delay range (it was the y direction at 2 s in the old
+  1.78 × 1 box). Modes with no x component don't get the Doppler shift.
+- Cost: about **5.4 s wall per simulated second** per run on one core at 256²
+  (40 Gauss–Seidel viscosity iterations), so a 240 s run takes ≈ 22 min.
 
 ### Delay sweep with ν = 0.01, 10 seeds, 4-minute window (128 × 72)
 

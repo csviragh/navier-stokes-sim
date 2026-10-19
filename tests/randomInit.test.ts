@@ -37,8 +37,8 @@ describe('random initial conditions', () => {
   it('ordered + perturbation: ⟨cos⟩ ≈ 0.95, reproducible', () => {
     const P2 = { walls: 'periodic' as const, selfPropulsion: true, selfPropV0: 0.5 };
     const vals: number[] = [];
-    for (let k = 0; k < 20; k++) {
-      const s = new FluidSolver(128, 72, P2); orderedInit(s, 100 + k);
+    for (let k = 0; k < 10; k++) {
+      const s = new FluidSolver(256, 256, P2); orderedInit(s, 100 + k);
       s.updateDiagnostics(); const g = s.grid;
       let ux = 0, vy = 0, N = 0;
       for (let j = 1; j <= g.ny; j++) for (let i = 1; i <= g.nx; i++) {

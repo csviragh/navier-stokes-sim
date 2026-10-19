@@ -20,10 +20,15 @@ html, body {
 
 canvas {
   position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
   display: block;
+}
+/* square simulation domain (side 1), centred in the window */
+#sim, #overlay {
+  --side: min(100vw, 100vh);
+  width: var(--side);
+  height: var(--side);
+  left: calc((100vw - var(--side)) / 2);
+  top: calc((100vh - var(--side)) / 2);
 }
 
 #sim { touch-action: none; cursor: crosshair; }

@@ -4,10 +4,10 @@
  * distribution P(cos θ_ij) and the exact ⟨cos θ_ij⟩.
  *
  *   npx esbuild scripts/delay-sweep.ts --bundle --platform=node --outfile=/tmp/delay-sweep.js
- *   node /tmp/delay-sweep.js --out /workspace/delay-sweep [--jobs 8] [--nx 128 --ny 72]
+ *   node /tmp/delay-sweep.js --out /workspace/delay-sweep [--jobs 8] [--n 256 | --nx 256 --ny 256]  (square box side 1, h = 1/n)
  *        [--tmax 120] [--seeds 3] [--dmax 2 --dstep 0.05] [--mode eulerian|lagrangian]
  *        [--tdiscard 60]   (steady-state window t > tdiscard; default tmax/2)
- *        [--init swirls|ordered [--heading 0 --psigma 6.6 --pamp 2]] [--seedmode shared|independent] [--delays 0.5,1]
+ *        [--init swirls|ordered [--heading 0 --psigma 0.065 --pamp 2]]  (psigma: patch σ in DOMAIN units) [--seedmode shared|independent] [--delays 0.5,1]
  *        [--nu 0.01 [--iters 40]]   (undelayed local viscosity ν; implicit Gauss–Seidel sweeps)
  *
  * Every (delay, seed) run is a child process (fork of this file) that writes
@@ -26,7 +26,8 @@ const arg = (name: string, def: string): string => {
   return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : def;
 };
 const OUT = arg('out', '/workspace/delay-sweep');
-const NX = +arg('nx', '128'), NY = +arg('ny', '72');
+const NSQ = arg('n', '256');
+const NX = +arg('nx', NSQ), NY = +arg('ny', NSQ);
 const TMAX = +arg('tmax', '120');
 const SAMPLE = +arg('sample', '0.5');
 const TDISCARD = +arg('tdiscard', String(TMAX / 2)); // steady-state averages use t > TDISCARD
@@ -62,7 +63,7 @@ export const SWEEP_PARAMS: Partial<FluidParams> = {
 };
 const INIT = arg('init', 'swirls'); // 'swirls': weak random swirl field; 'ordered': uniform flock + disordered patch
 const HEADING = +arg('heading', '0'); // ordered init: flock heading in degrees (0 = +x, the long axis)
-const PSIGMA = +arg('psigma', '6.6'), PAMP = +arg('pamp', '2'); // ordered init: patch σ (cells), swirl amplitude / v0
+const PSIGMA = +arg('psigma', '0.065'), PAMP = +arg('pamp', '2'); // ordered init: patch σ (domain units, side 1), swirl amplitude / v0
 const SEED_AMPLITUDE = 0.05; // weak random swirl field, |u| ≈ 0.05
 const SEED_MODE = arg('seedmode', 'shared'); // 'shared': same seeds at every delay; 'independent': fresh seed per (delay, k)
 const SEED_BASE = +arg('seedbase', '1000');

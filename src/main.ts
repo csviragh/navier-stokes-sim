@@ -116,14 +116,9 @@ function solverParams(s: Settings): Partial<FluidParams> {
   };
 }
 
-/** Grid size that fits the window aspect ratio with `resolution` cells on the short side. */
+/** Square grid: `resolution` cells per side, side length 1 (h = 1/resolution). */
 function gridSize(resolution: number): [number, number] {
-  const w = Math.max(canvas.clientWidth, 1);
-  const h = Math.max(canvas.clientHeight, 1);
-  const aspect = Math.min(Math.max(w / h, 1 / 3), 3);
-  return aspect >= 1
-    ? [Math.round(resolution * aspect), resolution]
-    : [resolution, Math.round(resolution / aspect)];
+  return [resolution, resolution];
 }
 
 /**
@@ -362,15 +357,8 @@ function delayQuickStart(p: Partial<Settings>, view: Settings['view']): void {
   controls.sync();
 }
 
-let resizeTimer: number | undefined;
-window.addEventListener('resize', () => {
-  renderer.resize();
-  window.clearTimeout(resizeTimer);
-  resizeTimer = window.setTimeout(() => {
-    const [nx, ny] = gridSize(settings.resolution);
-    if (nx !== solver.grid.nx || ny !== solver.grid.ny) solver = createSolver(solver);
-  }, 150);
-});
+// the grid is square and fixed (side 1); a window resize only rescales the canvas
+window.addEventListener('resize', () => renderer.resize());
 
 let frames = 0;
 let fpsTime = performance.now();

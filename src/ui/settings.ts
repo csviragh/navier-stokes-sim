@@ -69,7 +69,7 @@ export const defaultSettings: Settings = {
   delayMode: 'eulerian',
   dt: 1 / 60,
   iterations: 20,
-  resolution: 128,
+  resolution: 256,
   view: 'dye',
   arrows: false,
   color: '#3fa9ff',

@@ -65,7 +65,7 @@ ax.fill_between(x, y - sem, y + sem, color='#1f77b4', alpha=0.28, lw=0, zorder=2
 ax.plot(x, y, '-o', color='#0b3c78', ms=3.6, lw=1.6, zorder=3, label=f'mean over {nl}')
 ax.set_xlim(0, 2); ax.set_ylim(0, 1.02); ax.set_xlabel(xl)
 ax.set_ylabel(r'$\langle\cos\theta_{ij}\rangle$')
-ax.set_title(f'Pairwise velocity correlation vs delay (ν = {NU:g}, {th["nx"]}×{th["ny"]}, window {win})', fontsize=10)
+ax.set_title(f'Pairwise velocity correlation vs delay (ν = {NU:g}, {th["nx"]}×{th["ny"]}{", " + th["init"] + " init" if th.get("init") == "ordered" else ""}, window {win})', fontsize=10)
 ax.legend(fontsize=8, loc='upper right')
 for e in ('png', 'pdf'): fig.savefig(os.path.join(out, f'meancos_vs_delay.{e}'), dpi=200)
 plt.close(fig)
