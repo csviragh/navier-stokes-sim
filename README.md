@@ -1174,6 +1174,38 @@ with h = 1/72, i.e. a 1.78 × 1 box.
 - Cost: about **5.4 s wall per simulated second** per run on one core at 256²
   (40 Gauss–Seidel viscosity iterations), so a 240 s run takes ≈ 22 min.
 
+### Delay sweep on the 256 × 256 unit square: ν = 10⁻³, v₀ = 0.05 (ordered start, 1 seed)
+
+Ordered start along +x plus the σ = 0.065 incompressible swirl perturbation
+(⟨cos⟩ ≈ 0.95 right after the kick), Cucker–Smale only (S = 2, R = 0.05),
+τ = 1 s, **v₀ = 0.05**, undelayed ν = 10⁻³, Eulerian read, t_self = t_nb from
+0 to 2 s in 0.05 s steps, 1 seed per delay, 240 s runs, averages over 120–240 s.
+
+```bash
+npx tsx scripts/delay-sweep.ts --out /tmp/sq256 --n 256 --nu 1e-3 --v0 0.05 \
+  --init ordered --heading 0 --pamp 2 --seeds 1 --tmax 240 --tdiscard 120 --dmax 2 --dstep 0.05
+python3 scripts/delay-sweep-theory-visc.py kernel_symbols.json theory_visc.json 1e-3 0.05
+python3 scripts/plot-delay-sweep-visc10.py /tmp/sq256 theory_visc.json docs/sweeps/sq256-v005 --tdiscard 120
+python3 scripts/plot-delay-sweep-states.py /tmp/sq256 docs/sweeps/sq256-v005 --tdiscard 120
+```
+
+`--v0` (new, default 0.5) sets the self-propulsion target speed; the theory
+script takes ν and v₀ as optional 3rd/4th arguments.
+
+![⟨cos⟩ vs delay](docs/sweeps/sq256-v005/meancos_vs_delay.png)
+![P(cos θ_ij) vs delay](docs/sweeps/sq256-v005/heatmap_log.png)
+
+- Fully ordered (⟨cos⟩ = 1.000) up to t = 0.65 s; 0.993 at 0.70 s, then a
+  sharp drop (0.766 at 0.75 s, 0.50 at 0.85 s, 0.24 at 1.05 s).
+- Linear theory (two-delay characteristic equation with undelayed ν and
+  semi-Lagrangian damping) predicts onset at 0.67–0.68 s: agreement within one
+  delay step.
+- For t ≥ 1.15 s order is lost entirely (⟨cos⟩ ≈ 0, P(cos θ) peaked at ±1:
+  antiparallel lanes). 1.10 s is a transitional, fluctuating run.
+- The Doppler resonance t = L/U = 20 s lies far outside the range, so no
+  re-ordering features appear.
+
+
 ### Delay sweep with ν = 0.01, 10 seeds, 4-minute window (128 × 72)
 
 Same physics as the ν = 0.01 sweep above (Eulerian delay, ν = 0.01 not delayed, CS kernel

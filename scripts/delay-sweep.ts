@@ -50,7 +50,7 @@ export const SWEEP_PARAMS: Partial<FluidParams> = {
   vorticity: 0,              // no vorticity confinement
   selfPropulsion: true,
   selfPropTau: 1,            // relaxation time τ = 1 s
-  selfPropV0: 0.5,           // default target speed v₀
+  selfPropV0: +arg('v0', '0.5'),          // default target speed v₀
   kernel: 'cucker-smale',
   kernelStrength: 2,         // default S = 2 /s
   kernelRange: 0.05,         // default R
@@ -148,7 +148,7 @@ async function main() {
     const launch = () => {
       if (next >= todo.length) { if (done === todo.length) resolve(); return; }
       const [d, sd] = todo[next++];
-      const c = fork(process.argv[1], ['--child', '--delay', String(d), '--seed', String(sd), '--out', OUT, '--nx', String(NX), '--ny', String(NY), '--tmax', String(TMAX), '--sample', String(SAMPLE), '--mode', MODE, '--nu', String(NU), '--iters', String(ITERS), '--init', INIT, '--heading', String(HEADING), '--psigma', String(PSIGMA), '--pamp', String(PAMP)]);
+      const c = fork(process.argv[1], ['--child', '--delay', String(d), '--seed', String(sd), '--out', OUT, '--nx', String(NX), '--ny', String(NY), '--tmax', String(TMAX), '--sample', String(SAMPLE), '--mode', MODE, '--nu', String(NU), '--iters', String(ITERS), '--init', INIT, '--heading', String(HEADING), '--psigma', String(PSIGMA), '--pamp', String(PAMP), '--v0', arg('v0', '0.5')]);
       c.on('exit', (code) => {
         done++;
         console.log(`[${((Date.now() - T0) / 60000).toFixed(1)} min] ${done}/${todo.length} delay ${fmt(d)} seed ${sd} exit ${code}`);

@@ -13,7 +13,7 @@ Modes with ν k_h² ≥ S can never grow → cutoff k_c = sqrt(S/ν). Evaluated 
 discrete torus modes of each grid, (a) without numerical damping and (b) with
 the bilinear semi-Lagrangian advection damping γ_SL of the moving flock.
 
-usage: python3 scripts/delay-sweep-theory-visc.py kernel_symbols.json out.json [nu]
+usage: python3 scripts/delay-sweep-theory-visc.py kernel_symbols.json out.json [nu] [v0]
 """
 import json, sys
 import numpy as np
@@ -21,7 +21,8 @@ from scipy.special import lambertw
 
 src, out = sys.argv[1], sys.argv[2]
 NU = float(sys.argv[3]) if len(sys.argv) > 3 else 0.01
-S, v0, tau, dt = 2.0, 0.5, 1.0, 1 / 60
+S, tau, dt = 2.0, 1.0, 1 / 60
+v0 = float(sys.argv[4]) if len(sys.argv) > 4 else 0.5
 d = json.load(open(src))
 TS = np.round(np.arange(0.01, 2.0001, 0.01), 4)
 THETAS = np.linspace(0, np.pi / 2, 7)  # heading of the flock (symmetry: 0..π/2 covers all)

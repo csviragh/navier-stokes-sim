@@ -39,7 +39,7 @@ for dl in delays:
     agg.append(dict(delay=dl, n=n, mean=y.mean(), sd=sd, sem=sd / np.sqrt(n), H=np.mean([r['H'] for r in gg], 0), ys=y))
 x = np.array([a['delay'] for a in agg]); y = np.array([a['mean'] for a in agg]); sem = np.array([a['sem'] for a in agg])
 nmin, nmax = min(a['n'] for a in agg), max(a['n'] for a in agg)
-nl = f'{nmax} seeds' if nmin == nmax else f'{nmin}–{nmax} seeds (partial)'
+nl = '1 seed' if nmax == 1 else f'{nmax} seeds' if nmin == nmax else f'{nmin}–{nmax} seeds (partial)'
 xl = r'delay $t_{\mathrm{self}} = t_{\mathrm{nb}} = t$ (s)'
 win = f'{TD:.0f}–{TMAX:.0f} s'
 
@@ -60,12 +60,12 @@ with open(os.path.join(out, 'hist_avg.csv'), 'w') as f:
 fig, ax = plt.subplots(figsize=(6.4, 4.0))
 ax.axvspan(W0, W1, color='0.85', lw=0, zorder=0, label=f'linear-theory onset {W0:.2f}–{W1:.2f} s')
 for r in runs: ax.plot(r['delay'], r['mc'], 'o', ms=2.2, color='#1f77b4', alpha=0.22, mew=0, zorder=1)
-ax.plot([], [], 'o', ms=3, color='#1f77b4', alpha=0.4, mew=0, label='individual seeds')
-ax.fill_between(x, y - sem, y + sem, color='#1f77b4', alpha=0.28, lw=0, zorder=2, label='± s.e.m.')
-ax.plot(x, y, '-o', color='#0b3c78', ms=3.6, lw=1.6, zorder=3, label=f'mean over {nl}')
+if nmax > 1: ax.plot([], [], 'o', ms=3, color='#1f77b4', alpha=0.4, mew=0, label='individual seeds')
+ax.fill_between(x, y - sem, y + sem, color='#1f77b4', alpha=0.28, lw=0, zorder=2, label=('± s.e.m.' if nmax > 1 else None))
+ax.plot(x, y, '-o', color='#0b3c78', ms=3.6, lw=1.6, zorder=3, label=('single run' if nmax == 1 else f'mean over {nl}'))
 ax.set_xlim(0, 2); ax.set_ylim(0, 1.02); ax.set_xlabel(xl)
 ax.set_ylabel(r'$\langle\cos\theta_{ij}\rangle$')
-ax.set_title(f'Pairwise velocity correlation vs delay (ν = {NU:g}, {th["nx"]}×{th["ny"]}{", " + th["init"] + " init" if th.get("init") == "ordered" else ""}, window {win})', fontsize=10)
+ax.set_title(f'Pairwise velocity correlation vs delay (ν = {NU:g}, v0 = {th.get("params", {}).get("selfPropV0", 0.5):g}, {th["nx"]}×{th["ny"]}{", " + th["init"] + " init" if th.get("init") == "ordered" else ""}, window {win})', fontsize=10)
 ax.legend(fontsize=8, loc='upper right')
 for e in ('png', 'pdf'): fig.savefig(os.path.join(out, f'meancos_vs_delay.{e}'), dpi=200)
 plt.close(fig)
