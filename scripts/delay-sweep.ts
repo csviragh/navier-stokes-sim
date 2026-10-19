@@ -7,6 +7,7 @@
  *   node /tmp/delay-sweep.js --out /workspace/delay-sweep [--jobs 8] [--nx 128 --ny 72]
  *        [--tmax 120] [--seeds 3] [--dmax 2 --dstep 0.05] [--mode eulerian|lagrangian]
  *        [--tdiscard 60]   (steady-state window t > tdiscard; default tmax/2)
+ *        [--init swirls|ordered [--heading 0 --psigma 6.6 --pamp 2]] [--seedmode shared|independent] [--delays 0.5,1]
  *        [--nu 0.01 [--iters 40]]   (undelayed local viscosity ν; implicit Gauss–Seidel sweeps)
  *
  * Every (delay, seed) run is a child process (fork of this file) that writes
@@ -31,6 +32,7 @@ const SAMPLE = +arg('sample', '0.5');
 const TDISCARD = +arg('tdiscard', String(TMAX / 2)); // steady-state averages use t > TDISCARD
 const SEEDS = +arg('seeds', '3');
 const DMAX = +arg('dmax', '2'), DSTEP = +arg('dstep', '0.05');
+const DLIST = arg('delays', ''); // optional comma-separated delay list (overrides dmax/dstep)
 const JOBS = +arg('jobs', String(Math.max(1, cpus().length)));
 const MODE = arg('mode', 'eulerian') as DelayMode; // where the delayed terms read: fixed point or along the path
 if (MODE !== 'eulerian' && MODE !== 'lagrangian') throw new Error(`--mode must be eulerian or lagrangian (got ${MODE})`);
@@ -58,8 +60,18 @@ export const SWEEP_PARAMS: Partial<FluidParams> = {
   delayMode: MODE,
   dt: 1 / 60,
 };
+const INIT = arg('init', 'swirls'); // 'swirls': weak random swirl field; 'ordered': uniform flock + disordered patch
+const HEADING = +arg('heading', '0'); // ordered init: flock heading in degrees (0 = +x, the long axis)
+const PSIGMA = +arg('psigma', '6.6'), PAMP = +arg('pamp', '2'); // ordered init: patch σ (cells), swirl amplitude / v0
 const SEED_AMPLITUDE = 0.05; // weak random swirl field, |u| ≈ 0.05
-const seedOf = (k: number) => 1000 + 17 * k; // seed index k = 0, 1, 2, … (same for every delay)
+const SEED_MODE = arg('seedmode', 'shared'); // 'shared': same seeds at every delay; 'independent': fresh seed per (delay, k)
+const SEED_BASE = +arg('seedbase', '1000');
+const seedOf = (k: number, d = 0): number => {
+  if (SEED_MODE !== 'independent') return SEED_BASE + 17 * k; // seed index k = 0, 1, 2, … (same for every delay)
+  let h = (Math.imul(Math.round(d * 1000) + 1, 0x9e3779b1) ^ Math.imul(k + 1 + SEED_BASE, 0x85ebca77)) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x7feb352d) >>> 0; h = Math.imul(h ^ (h >>> 15), 0x846ca68b) >>> 0;
+  return (h ^ (h >>> 16)) >>> 0;
+};
 
 interface RunResult {
   delay: number; seed: number; nx: number; ny: number; steps: number; wallSeconds: number;
@@ -69,7 +81,8 @@ interface RunResult {
 
 function runOne(delay: number, seed: number): RunResult {
   const s = new FluidSolver(NX, NY, { ...SWEEP_PARAMS, delaySelf: delay, delayNb: delay });
-  s.seedActiveTurbulence(seed, SEED_AMPLITUDE);
+  if (INIT === 'ordered') s.seedOrderedPerturbation(seed, { heading: (HEADING * Math.PI) / 180, sigma: PSIGMA, amplitude: PAMP });
+  else s.seedActiveTurbulence(seed, SEED_AMPLITUDE);
   const g = s.grid, an = new OrderAnalyzer();
   const steps = Math.round(TMAX / SWEEP_PARAMS.dt!), every = Math.round(SAMPLE / SWEEP_PARAMS.dt!);
   const r: RunResult = { delay, seed, nx: NX, ny: NY, steps, wallSeconds: 0, t: [], meanCos: [], phi: [], speed: [], xi: [], hist: [], maxAbsU: 0, finite: true };
@@ -119,13 +132,14 @@ async function main() {
   }
   mkdirSync(join(OUT, 'runs'), { recursive: true });
   const delays: number[] = [];
-  for (let k = 0; k * DSTEP <= DMAX + 1e-9; k++) delays.push(+(k * DSTEP).toFixed(4));
+  if (DLIST) delays.push(...DLIST.split(',').map(Number));
+  else for (let k = 0; k * DSTEP <= DMAX + 1e-9; k++) delays.push(+(k * DSTEP).toFixed(4));
   const jobs: [number, number][] = [];
   // interleave seeds so partial results already cover the whole delay range
-  for (let k = 0; k < SEEDS; k++) for (const d of delays) jobs.push([d, seedOf(k)]);
+  for (let k = 0; k < SEEDS; k++) for (const d of delays) jobs.push([d, seedOf(k, d)]);
   const todo = jobs.filter(([d, sd]) => !existsSync(join(OUT, 'runs', `d${fmt(d)}_s${sd}.json`)));
   const th = theory();
-  writeFileSync(join(OUT, 'theory.json'), JSON.stringify({ ...th, params: SWEEP_PARAMS, nx: NX, ny: NY, tmax: TMAX, tdiscard: TDISCARD, sample: SAMPLE, seeds: SEEDS, delays, seedAmplitude: SEED_AMPLITUDE, pairs: PAIRS, bins: BINS }, null, 1));
+  writeFileSync(join(OUT, 'theory.json'), JSON.stringify({ ...th, params: SWEEP_PARAMS, nx: NX, ny: NY, tmax: TMAX, tdiscard: TDISCARD, sample: SAMPLE, seeds: SEEDS, delays, seedAmplitude: SEED_AMPLITUDE, init: INIT, heading: HEADING, psigma: PSIGMA, pamp: PAMP, seedMode: SEED_MODE, pairs: PAIRS, bins: BINS }, null, 1));
   console.log(`${jobs.length} runs (${todo.length} to do) on ${JOBS} processes, grid ${NX}×${NY}, ${TMAX} s each, ${MODE} delays`);
   const T0 = Date.now();
   let next = 0, done = 0;
@@ -133,7 +147,7 @@ async function main() {
     const launch = () => {
       if (next >= todo.length) { if (done === todo.length) resolve(); return; }
       const [d, sd] = todo[next++];
-      const c = fork(process.argv[1], ['--child', '--delay', String(d), '--seed', String(sd), '--out', OUT, '--nx', String(NX), '--ny', String(NY), '--tmax', String(TMAX), '--sample', String(SAMPLE), '--mode', MODE, '--nu', String(NU), '--iters', String(ITERS)]);
+      const c = fork(process.argv[1], ['--child', '--delay', String(d), '--seed', String(sd), '--out', OUT, '--nx', String(NX), '--ny', String(NY), '--tmax', String(TMAX), '--sample', String(SAMPLE), '--mode', MODE, '--nu', String(NU), '--iters', String(ITERS), '--init', INIT, '--heading', String(HEADING), '--psigma', String(PSIGMA), '--pamp', String(PAMP)]);
       c.on('exit', (code) => {
         done++;
         console.log(`[${((Date.now() - T0) / 60000).toFixed(1)} min] ${done}/${todo.length} delay ${fmt(d)} seed ${sd} exit ${code}`);

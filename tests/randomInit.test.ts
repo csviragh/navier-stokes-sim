@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FluidSolver } from '../src/solver';
-import { freshSeed, parseSeed, randomInit } from '../src/ui/randomInit';
+import { freshSeed, orderedInit, parseSeed, randomInit } from '../src/ui/randomInit';
 
 const P = { walls: 'periodic' as const, selfPropulsion: true, kernel: 'cucker-smale' as const, delaySelf: 0.3, delayNb: 0.3 };
 
@@ -33,5 +33,23 @@ describe('random initial conditions', () => {
     randomInit(a, 7, 0.05); randomInit(b, 7, 0.1);
     const m = (x: Float32Array) => Math.max(...Array.from(x, Math.abs));
     expect(m(b.u) / m(a.u)).toBeCloseTo(2, 3);
+  });
+  it('ordered + perturbation: ⟨cos⟩ ≈ 0.95, reproducible', () => {
+    const P2 = { walls: 'periodic' as const, selfPropulsion: true, selfPropV0: 0.5 };
+    const vals: number[] = [];
+    for (let k = 0; k < 20; k++) {
+      const s = new FluidSolver(128, 72, P2); orderedInit(s, 100 + k);
+      s.updateDiagnostics(); const g = s.grid;
+      let ux = 0, vy = 0, N = 0;
+      for (let j = 1; j <= g.ny; j++) for (let i = 1; i <= g.nx; i++) {
+        const q = i + g.stride * j, sp = Math.hypot(s.uc[q], s.vc[q]); ux += s.uc[q] / sp; vy += s.vc[q] / sp; N++;
+      }
+      vals.push((ux * ux + vy * vy - N) / (N * (N - 1)));
+    }
+    const m = vals.reduce((a, b) => a + b) / vals.length;
+    expect(m).toBeGreaterThan(0.94); expect(m).toBeLessThan(0.96);
+    const a = new FluidSolver(64, 36, P2), b = new FluidSolver(64, 36, P2);
+    orderedInit(a, 9); orderedInit(b, 9);
+    expect(Array.from(a.u)).toEqual(Array.from(b.u));
   });
 });

@@ -16,6 +16,8 @@ export interface ControlCallbacks {
   onReset(): void;
   /** Reseed with random swirls (typed seed or fresh), amplitude; returns the seed used. */
   onRandomInit(seed: number | null, amplitude: number): number;
+  /** Ordered flock along +x plus a disordered patch (typed seed or fresh); returns the seed used. */
+  onOrderedInit(seed: number | null): number;
   /** Quick start: enable self-propulsion, switch to periodic boundaries and seed weak random flow. */
   onActiveTurbulence(): void;
   /** Quick start: Cucker–Smale alignment + self-propulsion on periodic boundaries. */
@@ -190,6 +192,10 @@ export function bindControls(
     const seed = parseSeed($<HTMLInputElement>('seed-input').value);
     const amp = +$<HTMLInputElement>('seed-amp').value;
     const used = cb.onRandomInit(seed, Number.isFinite(amp) && amp > 0 ? amp : DEFAULT_SEED_AMPLITUDE);
+    $<HTMLElement>('seed-used').textContent = String(used);
+  });
+  $<HTMLButtonElement>('ordered-init').addEventListener('click', () => {
+    const used = cb.onOrderedInit(parseSeed($<HTMLInputElement>('seed-input').value));
     $<HTMLElement>('seed-used').textContent = String(used);
   });
 

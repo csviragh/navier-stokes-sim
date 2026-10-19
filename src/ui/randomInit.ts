@@ -24,3 +24,10 @@ export function randomInit(s: FluidSolver, seed: number, amplitude = DEFAULT_SEE
   s.seedActiveTurbulence(seed >>> 0, amplitude);
   return seed >>> 0;
 }
+
+/** Reset and seed an ordered flock along +x at v0 plus a disordered patch (⟨cos⟩ ≈ 0.95), like the ordered sweep. */
+export function orderedInit(s: FluidSolver, seed: number): number {
+  s.reset();
+  s.seedOrderedPerturbation(seed >>> 0, { heading: 0, sigma: 6.6, amplitude: 2 });
+  return seed >>> 0;
+}

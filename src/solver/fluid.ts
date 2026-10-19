@@ -911,6 +911,58 @@ export class FluidSolver {
    * self-propulsion term has a direction to amplify ("active turbulence").
    * `amplitude` is the rough peak speed in domain units / s.
    */
+  /**
+   * Ordered flock + localized disordered cluster: uniform u = v0 (heading in
+   * radians, 0 = +x) plus a Gaussian-tapered patch of random swirls. ψ_patch =
+   * env(x)·Σ vortices is a stream function, so the field stays exactly
+   * divergence free (periodic, nearest image). The seed sets the patch centre
+   * and the swirl positions / signs. sigma = patch radius (cells, Gaussian σ),
+   * amplitude = swirl speed scale relative to v0, core = swirl core radius (cells).
+   */
+  seedOrderedPerturbation(seed = 1, opts: { v0?: number; heading?: number; sigma?: number; amplitude?: number; core?: number; density?: number } = {}): void {
+    const g = this.grid; const { nx, ny, h } = g;
+    const v0 = opts.v0 ?? this.params.selfPropV0, heading = opts.heading ?? 0;
+    const sigma = opts.sigma ?? 6.6, amp = (opts.amplitude ?? 2) * v0, core = opts.core ?? 2.5, density = opts.density ?? 1;
+    let a = seed >>> 0;
+    const rand = (): number => {
+      a = (a + 0x6d2b79f5) >>> 0; let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const walls = this.params.walls, px = periodicX(walls), py = periodicY(walls);
+    const wrap = (d: number, n: number, p: boolean) => (p ? d - n * Math.round(d / n) : d);
+    const cx = rand() * nx, cy = rand() * ny;
+    const nv = Math.max(1, Math.round(density * (Math.PI * (2 * sigma) ** 2) / (Math.PI * (2 * core) ** 2) * 4));
+    const vort: [number, number, number][] = [];
+    for (let n = 0; n < nv; n++) {
+      // swirl centres spread over ~2σ around the patch centre
+      const rr = 2 * sigma * Math.sqrt(rand()), th = 2 * Math.PI * rand();
+      vort.push([cx + rr * Math.cos(th), cy + rr * Math.sin(th), (rand() < 0.5 ? -1 : 1) * amp * core * h * 1.65 * (0.5 + rand())]);
+    }
+    const cs = nx + 1, psi = new Float64Array(cs * (ny + 1));
+    for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++) {
+      const ex = wrap(i - cx, nx, px), ey = wrap(j - cy, ny, py);
+      const env = Math.exp(-(ex * ex + ey * ey) / (2 * sigma * sigma));
+      if (env < 1e-6) continue;
+      let sum = 0;
+      for (const [vx, vy, st] of vort) {
+        const dx = wrap(i - vx, nx, px), dy = wrap(j - vy, ny, py);
+        sum += st * Math.exp(-(dx * dx + dy * dy) / (2 * core * core));
+      }
+      psi[i + cs * j] = env * sum;
+    }
+    if (px) for (let j = 0; j <= ny; j++) psi[nx + cs * j] = psi[cs * j];
+    if (py) for (let i = 0; i <= nx; i++) psi[i + cs * ny] = psi[i];
+    this.u.fill(0); this.v.fill(0);
+    const iLast = isPeriodic(walls) ? uLastI(g, walls) : nx - 1, jLast = isPeriodic(walls) ? vLastJ(g, walls) : ny - 1;
+    const U0 = v0 * Math.cos(heading), V0 = v0 * Math.sin(heading);
+    for (let j = 1; j <= ny; j++) for (let i = 1; i <= iLast; i++)
+      this.u[uIdx(g, i, j)] = U0 + (psi[i + cs * j] - psi[i + cs * (j - 1)]) / h;
+    for (let j = 1; j <= jLast; j++) for (let i = 1; i <= nx; i++)
+      this.v[vIdx(g, i, j)] = V0 - (psi[i + cs * j] - psi[i - 1 + cs * j]) / h;
+    setUBoundary(g, this.u, walls); setVBoundary(g, this.v, walls);
+  }
+
   seedActiveTurbulence(seed = 1, amplitude = 0.05, vortices = 40): void {
     const g = this.grid;
     const { nx, ny, h } = g;

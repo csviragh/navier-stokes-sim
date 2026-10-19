@@ -2,7 +2,7 @@
  * App entry point: wires the solver, renderer, controls and pointer input
  * together and runs the animation loop.
  */
-import { freshSeed, randomInit } from './ui/randomInit';
+import { freshSeed, orderedInit, randomInit } from './ui/randomInit';
 import './style.css';
 import { FluidSolver, uIdx, vIdx, type FluidParams } from './solver';
 import { Renderer } from './render/renderer';
@@ -291,6 +291,12 @@ const controls = bindControls(settings, {
   },
   onRandomInit(seed: number | null, amplitude: number) {
     const used = randomInit(solver, seed ?? freshSeed(), amplitude);
+    trace.reset(solver);
+    renderer.resetScales();
+    return used;
+  },
+  onOrderedInit(seed: number | null) {
+    const used = orderedInit(solver, seed ?? freshSeed());
     trace.reset(solver);
     renderer.resetScales();
     return used;
