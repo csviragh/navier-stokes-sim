@@ -6,6 +6,7 @@ import { VIEW_MODES, type ViewMode } from '../render/renderer';
 import { KERNEL_TYPES, kernelProfile, type DelayInfo, type DelayStability, type ModeScan } from '../solver';
 import { WALL_TYPES } from '../solver';
 import type { Settings } from './settings';
+import { DEFAULT_SEED_AMPLITUDE, parseSeed } from './randomInit';
 
 type Key = keyof Settings;
 
@@ -13,6 +14,8 @@ export interface ControlCallbacks {
   onChange(key: Key, settings: Settings): void;
   onStep(): void;
   onReset(): void;
+  /** Reseed with random swirls (typed seed or fresh), amplitude; returns the seed used. */
+  onRandomInit(seed: number | null, amplitude: number): number;
   /** Quick start: enable self-propulsion, switch to periodic boundaries and seed weak random flow. */
   onActiveTurbulence(): void;
   /** Quick start: Cucker–Smale alignment + self-propulsion on periodic boundaries. */
@@ -183,6 +186,12 @@ export function bindControls(
   });
   $<HTMLButtonElement>('step').addEventListener('click', () => cb.onStep());
   $<HTMLButtonElement>('reset').addEventListener('click', () => cb.onReset());
+  $<HTMLButtonElement>('random-init').addEventListener('click', () => {
+    const seed = parseSeed($<HTMLInputElement>('seed-input').value);
+    const amp = +$<HTMLInputElement>('seed-amp').value;
+    const used = cb.onRandomInit(seed, Number.isFinite(amp) && amp > 0 ? amp : DEFAULT_SEED_AMPLITUDE);
+    $<HTMLElement>('seed-used').textContent = String(used);
+  });
 
   const panel = $<HTMLElement>('panel');
   const toggle = $<HTMLButtonElement>('panel-toggle');

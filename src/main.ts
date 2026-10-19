@@ -2,6 +2,7 @@
  * App entry point: wires the solver, renderer, controls and pointer input
  * together and runs the animation loop.
  */
+import { freshSeed, randomInit } from './ui/randomInit';
 import './style.css';
 import { FluidSolver, uIdx, vIdx, type FluidParams } from './solver';
 import { Renderer } from './render/renderer';
@@ -287,6 +288,12 @@ const controls = bindControls(settings, {
     seedDemo(solver);
     trace.reset(solver);
     renderer.resetScales();
+  },
+  onRandomInit(seed: number | null, amplitude: number) {
+    const used = randomInit(solver, seed ?? freshSeed(), amplitude);
+    trace.reset(solver);
+    renderer.resetScales();
+    return used;
   },
   onActiveTurbulence() {
     // Quick start: switch the active term on and start from weak random swirls,
