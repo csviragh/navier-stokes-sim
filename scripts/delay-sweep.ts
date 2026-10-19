@@ -6,6 +6,7 @@
  *   npx esbuild scripts/delay-sweep.ts --bundle --platform=node --outfile=/tmp/delay-sweep.js
  *   node /tmp/delay-sweep.js --out /workspace/delay-sweep [--jobs 8] [--nx 128 --ny 72]
  *        [--tmax 120] [--seeds 3] [--dmax 2 --dstep 0.05] [--mode eulerian|lagrangian]
+ *        [--tdiscard 60]   (steady-state window t > tdiscard; default tmax/2)
  *        [--nu 0.01 [--iters 40]]   (undelayed local viscosity ν; implicit Gauss–Seidel sweeps)
  *
  * Every (delay, seed) run is a child process (fork of this file) that writes
@@ -27,6 +28,7 @@ const OUT = arg('out', '/workspace/delay-sweep');
 const NX = +arg('nx', '128'), NY = +arg('ny', '72');
 const TMAX = +arg('tmax', '120');
 const SAMPLE = +arg('sample', '0.5');
+const TDISCARD = +arg('tdiscard', String(TMAX / 2)); // steady-state averages use t > TDISCARD
 const SEEDS = +arg('seeds', '3');
 const DMAX = +arg('dmax', '2'), DSTEP = +arg('dstep', '0.05');
 const JOBS = +arg('jobs', String(Math.max(1, cpus().length)));
@@ -123,7 +125,7 @@ async function main() {
   for (let k = 0; k < SEEDS; k++) for (const d of delays) jobs.push([d, seedOf(k)]);
   const todo = jobs.filter(([d, sd]) => !existsSync(join(OUT, 'runs', `d${fmt(d)}_s${sd}.json`)));
   const th = theory();
-  writeFileSync(join(OUT, 'theory.json'), JSON.stringify({ ...th, params: SWEEP_PARAMS, nx: NX, ny: NY, tmax: TMAX, sample: SAMPLE, seeds: SEEDS, delays, seedAmplitude: SEED_AMPLITUDE, pairs: PAIRS, bins: BINS }, null, 1));
+  writeFileSync(join(OUT, 'theory.json'), JSON.stringify({ ...th, params: SWEEP_PARAMS, nx: NX, ny: NY, tmax: TMAX, tdiscard: TDISCARD, sample: SAMPLE, seeds: SEEDS, delays, seedAmplitude: SEED_AMPLITUDE, pairs: PAIRS, bins: BINS }, null, 1));
   console.log(`${jobs.length} runs (${todo.length} to do) on ${JOBS} processes, grid ${NX}×${NY}, ${TMAX} s each, ${MODE} delays`);
   const T0 = Date.now();
   let next = 0, done = 0;
@@ -151,7 +153,7 @@ async function main() {
     if (!existsSync(f)) continue;
     const r: RunResult = JSON.parse(readFileSync(f, 'utf8'));
     r.t.forEach((t, k) => rows.push([d, sd, t, r.meanCos[k].toFixed(6), r.phi[k].toFixed(6), r.speed[k].toFixed(6), Number.isFinite(r.xi[k]) ? r.xi[k].toFixed(5) : '', ...r.hist[k]].join(',')));
-    const st = r.t.map((t, k) => (t > TMAX / 2 ? k : -1)).filter((k) => k >= 0);
+    const st = r.t.map((t, k) => (t > TDISCARD + 1e-9 ? k : -1)).filter((k) => k >= 0);
     const pick = (a: number[]) => st.map((k) => a[k]);
     const xs = pick(r.xi).filter(Number.isFinite);
     sum.push([d, sd, mean(r.meanCos).toFixed(6), mean(pick(r.meanCos)).toFixed(6), std(pick(r.meanCos)).toFixed(6), mean(r.phi).toFixed(6), mean(pick(r.phi)).toFixed(6),

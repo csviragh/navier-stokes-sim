@@ -1151,3 +1151,37 @@ Vite is configured with `base: './'`, so the build works under
 - **3D** solver (the grid/ops separation is designed to make this a parallel
   module) with volume rendering.
 - Move the solver into a Web Worker to keep the UI thread free.
+
+### Delay sweep with ν = 0.01, 10 seeds, 4-minute window (128 × 72)
+
+Same physics as the ν = 0.01 sweep above (Eulerian delay, ν = 0.01 not delayed, CS kernel
+S = 2/s, R = 0.05, β = 1, τ = 1 s, v₀ = 0.5, Δt = 1/60), coarse grid only, 41 delays
+0–2 s × 10 seeds (1000 + 17k), 300 s per run; the first 60 s are discarded and averages use
+the 240 s window 60–300 s (`--tdiscard 60`).
+
+```
+node /tmp/delay-sweep.js --out <dir> --jobs 8 --nx 128 --ny 72 --tmax 300 --tdiscard 60 \
+     --sample 0.5 --seeds 10 --mode eulerian --nu 0.01 --iters 40
+python3 scripts/plot-delay-sweep-visc10.py <dir> docs/sweeps/visc/theory_visc.json docs/sweeps/visc10 --tdiscard 60
+```
+
+![⟨cos θ_ij⟩ vs delay, 10 seeds](docs/sweeps/visc10/meancos_vs_delay.png)
+
+![P(cos θ_ij) vs delay, 10 seeds (log colour)](docs/sweeps/visc10/heatmap_log.png)
+
+⟨cos θ_ij⟩ over 60–300 s, mean ± s.e.m. (10 seeds):
+
+| t (s) | 0–0.45 | 0.50 | 0.55 | 0.60 | 0.70 | 0.80 | 1.00 | 1.20 | 1.50 | 1.65 | 1.80 | 2.00 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ⟨cos θ⟩ | 1.000 | 0.966 ± 0.013 | 0.823 ± 0.024 | 0.710 ± 0.025 | 0.497 ± 0.001 | 0.416 ± 0.016 | 0.321 ± 0.039 | 0.207 ± 0.033 | 0.127 ± 0.016 | 0.127 ± 0.026 | 0.217 ± 0.046 | 0.331 ± 0.106 |
+
+- Onset: all 10 seeds perfectly ordered through 0.45 s; order drops at 0.50 s, inside the
+  linear-theory window 0.43–0.50 s.
+- 0.75–1.15 s is bistable rather than a single plateau: 7 seeds decay steadily
+  (0.38 → 0.19), 3 seeds stay locked near 0.50. The mean (~0.3–0.45) mixes the two branches.
+- Minimum ≈ 0.12 at 1.5–1.65 s. The rise beyond 1.7 s is driven by a minority of seeds:
+  at 1.9 s one seed re-forms a full flock (1.00), at 2.0 s two do (0.93, 1.00); the rest
+  stay at ≈ 0.15–0.25.
+
+Files: `meancos_vs_delay.csv` (mean, s.e.m., seed std, min/max), `summary_runs.csv`,
+`hist_avg.csv`, `theory.json`, PNG (200 dpi) and PDF figures.
