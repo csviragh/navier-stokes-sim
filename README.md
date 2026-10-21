@@ -1222,9 +1222,73 @@ grid), `states.*`, and the CSVs `summary_runs.csv`, `meancos_vs_delay.csv`,
   seeds diverge (e.g. 1.10 s: 0.118 / 0.236 / 0.160; 1.13 s: 0.146 / 0.001).
   The mean drops below 0.1 at 1.11 s and reaches ≈ 0 (≤ 0.002) from 1.15 s on,
   apart from one intermittent run at 1.18 s (0.063).
-- **t ≥ 1.15 s:** order lost (⟨cos⟩ ≈ 0, P(cos θ) peaked at ±1, i.e.
-  parallel/antiparallel pairs, consistent with opposing lanes).
+- **t ≥ 1.15 s:** order lost (⟨cos⟩ ≈ 0, P(cos θ) peaked symmetrically at ±1).
+  The 10-seed snapshots below show this is a **lattice of counter-rotating
+  vortices, not opposing lanes** (see next section).
 - The Doppler resonance t = L/U = 20 s lies far outside the range.
+
+
+#### 10 extra seeds, 0.90–1.25 s, and regime snapshots
+
+Same physics and flags as the fine sweep, delays 0.90–1.25 s (step 0.01) × 10 new
+seeds (`--seedbase 7000`), 360 runs, plus `--dump` (writes the final cell-centred
+(u, v) of every run as float32 `runs/*.field.bin`; physics unchanged). Four extra
+delays (0.60, 0.70, 0.80, 0.85 × 2 seeds) were run with `--dump` for snapshots only.
+
+```
+node /tmp/delay-sweep.js --out <seeds10> --jobs 8 --n 256 --tmax 240 --tdiscard 120 --sample 0.5 \
+  --seeds 10 --seedmode independent --seedbase 7000 --init ordered --heading 0 --pamp 2 --psigma 0.065 \
+  --delays 0.90,0.91,...,1.25 --mode eulerian --nu 1e-3 --iters 40 --v0 0.05 --dump
+python3 scripts/plot-delay-sweep-merged.py <coarse> <fine> docs/sweeps/sq256-v005/theory_visc.json \
+  docs/sweeps/sq256-v005 --tdiscard 120 --rawdir docs/sweeps/sq256-v005/fine \
+  --seeds10 <seeds10> --rawdir10 docs/sweeps/sq256-v005/seeds10
+python3 scripts/plot-delay-snapshots.py docs/sweeps/sq256-v005/snapshots.png "label=run.field.bin" ...
+```
+
+The figures above now include these runs (12–13 runs per delay in 0.90–1.25 s;
+error bars = ±1 std over runs). Raw data in
+[`docs/sweeps/sq256-v005/seeds10/`](docs/sweeps/sq256-v005/seeds10):
+`summary_seeds10.csv`, `hist_seeds10_runs.csv.gz`, `timeseries_seeds10.csv.gz`.
+
+10-seed ⟨cos⟩ (window 120–240 s), mean ± std; "ordered" = run mean > 0.05:
+
+| delay (s) | ⟨cos⟩ | ordered | delay (s) | ⟨cos⟩ | ordered |
+|---|---|---|---|---|---|
+| 0.90 | 0.425 ± 0.002 | 10/10 | 1.10 | 0.082 ± 0.049 | 7/10 |
+| 0.95 | 0.362 ± 0.006 | 10/10 | 1.11 | 0.120 ± 0.053 | 8/10 |
+| 1.00 | 0.287 ± 0.017 | 10/10 | 1.12 | 0.081 ± 0.087 | 5/10 |
+| 1.03 | 0.275 ± 0.008 | 10/10 | 1.13 | 0.059 ± 0.050 | 6/10 |
+| 1.05 | 0.224 ± 0.037 | 10/10 | 1.14 | 0.054 ± 0.056 | 5/10 |
+| 1.07 | 0.199 ± 0.019 | 10/10 | 1.15 | 0.021 ± 0.034 | 3/10 |
+| 1.09 | 0.170 ± 0.022 | 10/10 | 1.16 | 0.010 ± 0.022 | 1/10 |
+| | | | 1.17 | 0.008 ± 0.016 | 0/10 |
+| | | | 1.18–1.25 | 0.000 ± 0.000 | 0/10 |
+
+(all 36 delays in `meancos_vs_delay.csv`.) The collapse is a seed-dependent window
+1.10–1.17 s; every run is disordered from 1.18 s. Note: with more seeds the "main"
+state class (±0.02 of the modal state) labels more of the slightly scattered
+0.93–1.08 s runs as "other"; that is the tight tolerance, not a new state.
+
+![regime snapshots](docs/sweeps/sq256-v005/snapshots.png)
+
+Columns: final field (t = 240 s); top hue = direction, brightness = speed, arrows;
+middle vorticity; bottom speed. (At 0.60 s the flow is uniform and the vorticity
+panel only shows round-off-level noise.)
+
+- **0.60 s:** uniform flock along +x.
+- **0.80 s:** straight stripes perpendicular to the flock direction; the heading
+  oscillates from stripe to stripe (alternating vorticity bands), ⟨cos⟩ = 0.62.
+- **0.95 s:** same stripes, now wavy, with larger heading swing.
+- **1.12 s:** bistable — one seed still striped with dislocations (⟨cos⟩ = 0.23),
+  another already collapsed.
+- **≥ 1.15 s:** a roughly square lattice of counter-rotating vortices, φ ≈ 0.01.
+
+**Lanes verdict: no opposing lanes.** Lanes would make the field nematic
+(|⟨e^{2iθ}⟩| → 1). In the disordered runs (1.18–1.25 s, 80 fields) the
+speed-weighted nematic order is 0.04–0.13 (max 0.32), polar order ≈ 0.01. The
+pile-up of P(cos θ) at ±1 (≈ 15 % of pairs in each of cos < −0.9 and cos > 0.9) comes
+from the periodic vortex lattice: pairs at about a lattice period apart are
+parallel, pairs half a period apart are antiparallel.
 
 
 ### Delay sweep with ν = 0.01, 10 seeds, 4-minute window (128 × 72)

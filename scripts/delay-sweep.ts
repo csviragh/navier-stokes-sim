@@ -8,6 +8,7 @@
  *        [--tmax 120] [--seeds 3] [--dmax 2 --dstep 0.05] [--mode eulerian|lagrangian]
  *        [--tdiscard 60]   (steady-state window t > tdiscard; default tmax/2)
  *        [--init swirls|ordered [--heading 0 --psigma 0.065 --pamp 2]]  (psigma: patch σ in DOMAIN units) [--seedmode shared|independent] [--delays 0.5,1]
+ *        [--dump]   (save final (u,v) field per run as runs/*.field.bin, float32)
  *        [--nu 0.01 [--iters 40]]   (undelayed local viscosity ν; implicit Gauss–Seidel sweeps)
  *
  * Every (delay, seed) run is a child process (fork of this file) that writes
@@ -40,6 +41,7 @@ if (MODE !== 'eulerian' && MODE !== 'lagrangian') throw new Error(`--mode must b
 const NU = +arg('nu', '0');          // local viscosity ν (NOT delayed: delayLocal = false)
 const ITERS = +arg('iters', '20');   // Gauss–Seidel sweeps of the implicit viscosity (20 = solver default)
 const BINS = 40, PAIRS = 30000;
+const DUMP = process.argv.includes('--dump'); // write final cell-centred (u,v) as float32 [u(ny×nx), v(ny×nx)] to runs/*.field.bin
 
 /** Physics of the sweep (everything else = solver defaults). */
 export const SWEEP_PARAMS: Partial<FluidParams> = {
@@ -104,6 +106,14 @@ function runOne(delay: number, seed: number): RunResult {
   }
   for (const a of [s.u, s.v]) for (const x of a) { if (!Number.isFinite(x)) r.finite = false; else r.maxAbsU = Math.max(r.maxAbsU, Math.abs(x)); }
   r.wallSeconds = (Date.now() - t0) / 1000;
+  if (DUMP) {
+    const f = new Float32Array(2 * g.nx * g.ny);
+    for (let j = 1; j <= g.ny; j++) for (let i = 1; i <= g.nx; i++) {
+      const k = i + g.stride * j, o = (i - 1) + g.nx * (j - 1);
+      f[o] = s.uc[k]; f[o + g.nx * g.ny] = s.vc[k];
+    }
+    writeFileSync(join(OUT, 'runs', `d${fmt(delay)}_s${seed}.field.bin`), Buffer.from(f.buffer));
+  }
   return r;
 }
 
@@ -148,7 +158,7 @@ async function main() {
     const launch = () => {
       if (next >= todo.length) { if (done === todo.length) resolve(); return; }
       const [d, sd] = todo[next++];
-      const c = fork(process.argv[1], ['--child', '--delay', String(d), '--seed', String(sd), '--out', OUT, '--nx', String(NX), '--ny', String(NY), '--tmax', String(TMAX), '--sample', String(SAMPLE), '--mode', MODE, '--nu', String(NU), '--iters', String(ITERS), '--init', INIT, '--heading', String(HEADING), '--psigma', String(PSIGMA), '--pamp', String(PAMP), '--v0', arg('v0', '0.5')]);
+      const c = fork(process.argv[1], ['--child', '--delay', String(d), '--seed', String(sd), '--out', OUT, '--nx', String(NX), '--ny', String(NY), '--tmax', String(TMAX), '--sample', String(SAMPLE), '--mode', MODE, '--nu', String(NU), '--iters', String(ITERS), '--init', INIT, '--heading', String(HEADING), '--psigma', String(PSIGMA), '--pamp', String(PAMP), '--v0', arg('v0', '0.5'), ...(DUMP ? ['--dump'] : [])]);
       c.on('exit', (code) => {
         done++;
         console.log(`[${((Date.now() - T0) / 60000).toFixed(1)} min] ${done}/${todo.length} delay ${fmt(d)} seed ${sd} exit ${code}`);
