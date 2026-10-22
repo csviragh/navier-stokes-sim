@@ -1390,3 +1390,67 @@ python3 scripts/plot-delay-sweep-visc10.py <dir> docs/sweeps/visc/theory_visc.js
 
 Files: `meancos_vs_delay.csv` (mean, s.e.m., seed std, min/max), `summary_runs.csv`,
 `hist_avg.csv`, `theory.json`, PNG (200 dpi) and PDF figures.
+
+### Fine random-start delay sweep (0.50–1.25 s, step 0.01, 4 seeds)
+
+Same settings as the random-start sweep above (`--init swirls`, 256², ν = 1e-3, S = 2, R = 0.05,
+β = 1, τ = 1, v0 = 0.05, Δt = 1/60, 40 iterations, CS kernel, t_self = t_nb = t, 240 s runs, window
+120–240 s, `--dump`), delays 0.50–1.25 s in 0.01 s steps (76 values), 4 independent seeds each
+(`--seedbase 9500`), 304 runs. Data and figures: [`docs/sweeps/sq256-v005-random-fine/`](docs/sweeps/sq256-v005-random-fine).
+
+```
+node delay-sweep.js --out <dir> --jobs 8 --n 256 --tmax 240 --tdiscard 120 --sample 0.5 \
+  --seeds 4 --seedmode independent --seedbase 9500 --init swirls --delays 0.50,0.51,...,1.25 \
+  --mode eulerian --nu 1e-3 --iters 40 --v0 0.05 --dump
+python3 scripts/plot-delay-sweep-merged.py <dir> <empty dir> docs/sweeps/sq256-v005/theory_visc.json \
+  docs/sweeps/sq256-v005-random-fine --lo 0.5 --hi 1.25 --initlabel 'random init' --coarselabel 'runs (4 seeds)'
+python3 scripts/plot-delay-compare-fine.py docs/sweeps/sq256-v005-random-fine docs/sweeps/sq256-v005-random \
+  docs/sweeps/sq256-v005 docs/sweeps/sq256-v005-random-fine
+python3 scripts/lattice-check.py <dir> docs/sweeps/sq256-v005-random-fine/lattice.csv
+```
+
+![fine random vs 0.05 random vs ordered start](docs/sweeps/sq256-v005-random-fine/compare_fine.png)
+![mean cos vs delay, fine random start](docs/sweeps/sq256-v005-random-fine/meancos_vs_delay.png)
+![log histogram heatmap, fine random start](docs/sweeps/sq256-v005-random-fine/heatmap_log.png)
+
+| delay (s) | fine random ⟨cos⟩ mean ± std (4) | ordered (> 0.05) | ordered-start mean | ordered-start ordered |
+|---|---|---|---|---|
+| 0.50–0.67 | 1.000 ± 0.000 | 4/4 | 1.000 | all |
+| 0.70 | 0.992 ± 0.007 | 4/4 | 0.987 | 3/3 |
+| 0.75 | 0.767 ± 0.002 | 4/4 | 0.766 | 3/3 |
+| 0.80 | 0.635 ± 0.025 | 4/4 | 0.618 | 3/3 |
+| 0.90 | 0.427 ± 0.023 | 4/4 | 0.425 | 13/13 |
+| 1.00 | 0.264 ± 0.000 | 4/4 | 0.286 | 13/13 |
+| 1.03 | 0.193 ± 0.074 | 4/4 | 0.270 | 12/12 |
+| 1.04 | 0.159 ± 0.109 | 3/4 | 0.257 | 12/12 |
+| 1.05 | 0.219 ± 0.049 | 4/4 | 0.228 | 13/13 |
+| 1.06 | 0.114 ± 0.077 | 3/4 | 0.216 | 12/12 |
+| 1.07 | 0.034 ± 0.067 | 1/4 | 0.196 | 12/12 |
+| 1.08 | 0.036 ± 0.071 | 1/4 | 0.189 | 12/12 |
+| 1.09 | 0.001 ± 0.001 | 0/4 | 0.170 | 12/12 |
+| 1.10 | 0.032 ± 0.064 | 1/4 | 0.102 | 10/13 |
+| 1.11–1.25 | ≤ 0.0005 | 0/4 | 0.116 → 0.000 | 9/12 at 1.11, last ordered run 1.18 |
+
+(`compare_fine.csv` has every delay for all three sweeps.)
+
+- **Fine curve agrees with both earlier curves** up to ≈ 1.00 s: full order through 0.67 s
+  (first deviation 0.68 s, 0.99999), then the same smooth decline (0.70: 0.992, 0.80: 0.635,
+  0.90: 0.427, 1.00: 0.264).
+- **Random-start collapse is a probabilistic band, 1.04–1.10 s.** The first collapsed seed is at
+  1.04 s (3/4 ordered), 1.06 s 3/4, 1.07–1.08 s 1/4, 1.09 s 0/4, 1.10 s 1/4 (one seed still
+  ordered, ⟨cos⟩ = 0.128), and every run is disordered from 1.11 s. Fraction ordered crosses
+  ½ between 1.06 and 1.07 s.
+- **Hysteresis width.** Ordered start stays fully ordered up to 1.09 s (12/12), has a mixed band
+  1.10–1.18 s, and is fully disordered from 1.19 s. So the region where only the initial
+  condition decides runs from ≈ 1.04 s (first random-start collapse) to ≈ 1.18 s (last
+  ordered-start survivor): ≈ 0.14 s wide; between the 50 % points (≈ 1.065 s random vs
+  ≈ 1.13 s ordered) it is ≈ 0.07 s.
+- **Vortex lattice in the disordered runs.** Over the 75 runs with ⟨cos⟩ ≤ 0.05 the final-field
+  polar order is 0.001–0.039 (mean 0.011), P(cos > 0.9) = 14.8–17.8 % and
+  P(cos < −0.9) = 14.5–17.7 % (the ±1 pile-up), mean nematic order per delay 0.02–0.29. The
+  cleanest square lattice is again in seeds that collapse right at the edge (1.06 s). One
+  exception: 1.22 s seed 1792248310 has nematic order 0.78 with ⟨cos⟩ = 0.000, a diagonal
+  band state of counter-moving stripes (lane-like) rather than a lattice; it is the only such
+  run out of 75 (next highest 0.24).
+
+![regime snapshots, fine random start](docs/sweeps/sq256-v005-random-fine/snapshots.png)
