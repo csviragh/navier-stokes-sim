@@ -1291,6 +1291,72 @@ from the periodic vortex lattice: pairs at about a lattice period apart are
 parallel, pairs half a period apart are antiparallel.
 
 
+### Random-start delay sweep (256², ν = 1e-3, v0 = 0.05, 10 seeds)
+
+Same settings as the ordered-start sweep above (256 × 256 periodic unit square,
+S = 2, R = 0.05, β = 1, τ = 1, Δt = 1/60, 40 iterations, CS kernel,
+t_self = t_nb = t, 240 s runs, window 120–240 s), but started from the weak
+random swirl field (`--init swirls`, |u| ≈ 0.05, no preferred direction).
+Delays 0–2.00 s in 0.05 s steps, 10 independent seeds each (`--seedbase 9000`),
+410 runs. Data and figures: [`docs/sweeps/sq256-v005-random/`](docs/sweeps/sq256-v005-random).
+
+```
+node delay-sweep.js --out <dir> --jobs 8 --n 256 --tmax 240 --tdiscard 120 --sample 0.5 \
+  --seeds 10 --seedmode independent --seedbase 9000 --init swirls --delays 0.00,0.05,...,2.00 \
+  --mode eulerian --nu 1e-3 --iters 40 --v0 0.05 --dump
+python3 scripts/plot-delay-sweep-merged.py <dir> <empty dir> docs/sweeps/sq256-v005/theory_visc.json \
+  docs/sweeps/sq256-v005-random --lo 0.6 --hi 1.3 --initlabel 'random init' --coarselabel 'runs (10 seeds)'
+python3 scripts/plot-delay-compare-init.py docs/sweeps/sq256-v005-random docs/sweeps/sq256-v005 docs/sweeps/sq256-v005-random
+python3 scripts/lattice-check.py <dir> docs/sweeps/sq256-v005-random/lattice.csv
+```
+
+![random vs ordered start](docs/sweeps/sq256-v005-random/compare_init.png)
+![mean cos vs delay, random start](docs/sweeps/sq256-v005-random/meancos_vs_delay.png)
+![log histogram heatmap, random start](docs/sweeps/sq256-v005-random/heatmap_log.png)
+![states, random start](docs/sweeps/sq256-v005-random/states.png)
+
+| delay (s) | random ⟨cos⟩ mean ± std (10 runs) | random runs ordered (⟨cos⟩ > 0.05) | ordered-start mean (runs) | ordered-start runs ordered |
+|---|---|---|---|---|
+| 0.00–0.65 | 1.000 ± 0.000 | 10/10 | 1.000 (1–3) | all |
+| 0.70 | 0.981 ± 0.012 | 10/10 | 0.987 (3) | 3/3 |
+| 0.75 | 0.778 ± 0.027 | 10/10 | 0.766 (3) | 3/3 |
+| 0.80 | 0.629 ± 0.019 | 10/10 | 0.618 (3) | 3/3 |
+| 0.85 | 0.517 ± 0.026 | 10/10 | 0.504 (3) | 3/3 |
+| 0.90 | 0.430 ± 0.015 | 10/10 | 0.425 (13) | 13/13 |
+| 0.95 | 0.345 ± 0.018 | 10/10 | 0.362 (13) | 13/13 |
+| 1.00 | 0.248 ± 0.032 | 10/10 | 0.286 (13) | 13/13 |
+| 1.05 | 0.142 ± 0.106 | 7/10 | 0.228 (13) | 13/13 |
+| 1.10 | 0.001 ± 0.001 | 0/10 | 0.102 (13) | 10/13 |
+| 1.15 | 0.000 ± 0.000 | 0/10 | 0.016 (13) | 3/13 |
+| 1.20–2.00 | ≤ 0.001 | 0/10 | ≤ 0.001 | 0 |
+
+(`compare_init.csv` has every delay, including the 0.01-step ordered-start points.)
+
+- **Order emerges from a random start.** Every random run reaches the uniform
+  flock up to 0.65 s, and from 0.70 to 1.00 s the random-start curve lies on the
+  ordered-start one (differences ≤ 0.04, within about one std), with the same
+  straight (0.80 s) and wavy (0.95 s) stripe states.
+- **Hysteresis: yes, narrow, at the collapse.** From a random start the ordered
+  branch already ends at 1.05 s (7/10 seeds ordered, 3 collapsed straight into the
+  lattice) and every run is disordered from 1.10 s. From an ordered start all 13 runs
+  are still ordered at 1.05 s, 10/13 at 1.10 s and 3/13 at 1.15 s; full collapse only
+  at ≈ 1.17–1.19 s. So between ≈ 1.05 and 1.15 s both the striped flock and the
+  vortex lattice are reachable and the initial condition decides. The random-start
+  grid is 0.05 s, so its collapse edge is only known to lie in (1.05, 1.10] s.
+- **The vortex lattice shows up.** From 1.10 s on (all 380 random runs) polar order
+  of the final field is 0.001–0.07 (mean ≈ 0.01), the unweighted nematic order
+  |⟨e^{2iθ}⟩| averages 0.03–0.24 per delay (single-run max 0.53, so no lanes), and
+  P(cos θ) holds 14.5–18.5 % of pairs in each of cos > 0.9 and cos < −0.9, the same
+  ±1 pile-up as the ordered-start lattice (`lattice.csv`). The cleanest square
+  lattice is in the collapsed 1.05 s seeds; at larger delays (e.g. 1.50 s) the
+  vortices are less regular and faster (max |u| 0.13 vs 0.06).
+
+![regime snapshots, random start](docs/sweeps/sq256-v005-random/snapshots.png)
+
+Columns: 0.60 s uniform flock; 0.80 s straight stripes; 0.95 s wavy stripes;
+1.05 s one seed still striped (⟨cos⟩ = 0.20) and one collapsed into a square vortex
+lattice; 1.50 s a disordered, less regular vortex field.
+
 ### Delay sweep with ν = 0.01, 10 seeds, 4-minute window (128 × 72)
 
 Same physics as the ν = 0.01 sweep above (Eulerian delay, ν = 0.01 not delayed, CS kernel

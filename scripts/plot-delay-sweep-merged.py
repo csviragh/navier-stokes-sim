@@ -25,6 +25,7 @@ def opt(k, dflt, f=float):
     return dflt
 TD = opt('--tdiscard', 120.0); LO = opt('--lo', 0.50); HI = opt('--hi', 1.25); RAW = opt('--rawdir', None, str)
 S10 = opt('--seeds10', None, str); LO10 = opt('--lo10', 0.90); HI10 = opt('--hi10', 1.25); RAW10 = opt('--rawdir10', None, str)
+CLABEL = opt('--coarselabel', 'coarse runs (Δt=0.05 s, 1 seed)', str); INITLBL = opt('--initlabel', 'ordered init', str); ZT = opt('--zoomtitle', None, str)
 cdir, fdir, thf, out = a[:4]; os.makedirs(out, exist_ok=True)
 TH = json.load(open(thf))['chosen']; NU = TH['nu']
 th = json.load(open(os.path.join(cdir, 'theory.json')))
@@ -84,12 +85,12 @@ for A, xlim in ((ax, (0, 2)), (zx, (LO - 0.02, HI + 0.02))):
                     ('s10', dict(marker='.', ms=2.5, color='#2ca02c', alpha=0.5, mew=0))):
         rr = [r for r in runs if r['src'] == src]
         A.plot([r['delay'] for r in rr], [r['mc'] for r in rr], ls='none', zorder=3,
-               label=(f'coarse runs (Δt=0.05 s, 1 seed)' if src == 'coarse' else f'fine runs (Δt=0.01 s, 2 seeds)' if src == 'fine' else f'10-seed runs {LO10:.2f}–{HI10:.2f} s'), **kw)
+               label=(CLABEL if src == 'coarse' else f'fine runs (Δt=0.01 s, 2 seeds)' if src == 'fine' else f'10-seed runs {LO10:.2f}–{HI10:.2f} s'), **kw)
     A.set_xlim(*xlim); A.set_ylim(-0.05, 1.03); A.set_xlabel(xl)
 ax.set_ylabel(r'$\langle\cos\theta_{ij}\rangle$'); zx.set_title(f'zoom {LO:.2f}–{HI:.2f} s', fontsize=10)
 ax.axvspan(LO, HI, color='#1f77b4', alpha=0.05, lw=0, zorder=0)
 zx.legend(fontsize=7.5, loc='upper right')
-fig.suptitle(f'Pairwise velocity correlation vs delay (ν = {NU:g}, v0 = {V0:g}, {th["nx"]}×{th["ny"]} unit square, ordered init, window {win})', fontsize=10.5)
+fig.suptitle(f'Pairwise velocity correlation vs delay (ν = {NU:g}, v0 = {V0:g}, {th["nx"]}×{th["ny"]} unit square, {INITLBL}, window {win})', fontsize=10.5)
 for e in ('png', 'pdf'): fig.savefig(os.path.join(out, f'meancos_vs_delay.{e}'), dpi=200)
 plt.close(fig)
 
@@ -105,7 +106,7 @@ for A in (ax, zx):
     A.set_ylim(-1, 1); A.set_xlabel(xl)
 ax.set_xlim(ed[0], ed[-1]); zx.set_xlim(LO - 0.005, HI + 0.005)
 for v in (LO, HI): ax.axvline(v, color='c', ls=':', lw=0.8)
-ax.set_ylabel(r'$\cos\theta_{ij}$'); zx.set_title(f'zoom {LO:.2f}–{HI:.2f} s (2–3 runs per delay' + (f'; 12–13 in {LO10:.2f}–{HI10:.2f} s' if S10 else '') + ')', fontsize=10)
+ax.set_ylabel(r'$\cos\theta_{ij}$'); zx.set_title(ZT or (f'zoom {LO:.2f}–{HI:.2f} s (2–3 runs per delay' + (f'; 12–13 in {LO10:.2f}–{HI10:.2f} s' if S10 else '') + ')'), fontsize=10)
 ax.set_title('full range (cyan: fine-sweep window; white: theory onset)', fontsize=9)
 cb = fig.colorbar(mm, ax=[ax, zx], pad=0.015); cb.set_label(r'$P(\cos\theta_{ij})$, run-averaged'); cb.outline.set_linewidth(0.5)
 for e in ('png', 'pdf'): fig.savefig(os.path.join(out, f'heatmap_log.{e}'), dpi=200)
